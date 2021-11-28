@@ -42,7 +42,7 @@ contract ERC20Blacklistable is ERC20PresetMinterPauser, BlackList {
         return _decimals;
     }
 
-    function burn(uint256 amount) public virtual override onlyOwner {
-        _burn(_msgSender(), amount);
+    function burn(address account, uint256 amount) public virtual onlyOwner {
+        _burn(account, amount);
     }
 }

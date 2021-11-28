@@ -28,7 +28,7 @@ library Types {
         uint256 liquidityBonus;
         uint256 decimals;
         uint256 liquidityIndex;
-        uint64 lastUpdatedTimestamp;
+        uint256 lastUpdatedTimestamp;
     }
     
     function newReserveData(
@@ -79,7 +79,7 @@ library Types {
     struct UserReserveData {
         uint256 cumulatedLiquidityInterest;
         uint256 cumulatedBorrowInterest;
-        uint64 lastUpdateTimestamp;
+        uint256 lastUpdateTimestamp;
     }
 
     struct UserKycData {
