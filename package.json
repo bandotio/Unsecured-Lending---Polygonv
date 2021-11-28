@@ -18,6 +18,7 @@
   },
   "homepage": "https://github.com/bandotio/Unsecured-Lending---Polygonv#readme",
   "dependencies": {
+    "@chainlink/contracts": "^0.2.2",
     "@openzeppelin/contracts": "^4.4.0",
     "hardhat": "^2.7.0"
   },
