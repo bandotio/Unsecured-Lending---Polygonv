@@ -116,7 +116,7 @@ library Types {
 
         AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
         (, int256 result, , , ) = oracle.latestRoundData();
-        uint256 unitPrice = uint256(result); // TODO verify if this can be done
+        uint256 unitPrice = uint256(result);
 
         uint256 totalCollateralInUsd = unitPrice * sToken.balanceOf(user);
         uint256 totalDebtInUsd = unitPrice * debtToken.balanceOf(user);
@@ -158,7 +158,7 @@ library Types {
 
         AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
         (, int256 result, , , ) = oracle.latestRoundData();
-        uint256 unitPrice = uint256(result); // TODO verify if this can be done
+        uint256 unitPrice = uint256(result);
 
         uint256 debtAssetPrice = 1;
 
@@ -192,11 +192,34 @@ library Types {
         uint256 borrowRate
     ) public view returns(uint256, uint256, uint256) {
         IERC20 sToken = IERC20(reserve.sTokenAddress);
-        uint256 availableLiquidity = sToken.totalSupply();
-        uint256 currentAvailableLiqudity = availableLiquidity + liquidityAdded - liquidityTaken;
-        uint256 currentBorrowRate;
+        uint256 currentAvailableLiqudity = sToken.totalSupply() + liquidityAdded - liquidityTaken;
         uint256 currentLiquidityRate = reserve.liquidityRate;
-        uint256 utilizationRate;
+        
+        (uint256 utilizationRate, uint256 currentBorrowRate) = calculateUtilizationAndBorrowRate(
+            reserve,
+            vars,
+            totalDebt,
+            currentAvailableLiqudity
+        );
+        
+        if (totalDebt != 0) {
+            currentLiquidityRate = borrowRate  * utilizationRate;
+        }
+        else {
+            currentLiquidityRate = 0;
+        }
+        return (currentLiquidityRate / 10**12, currentBorrowRate, utilizationRate);
+    }
+
+    function calculateUtilizationAndBorrowRate(
+        ReserveData memory reserve,
+        InterestRateData memory vars,
+        uint256 totalDebt,
+        uint256 currentAvailableLiqudity    
+    ) internal pure returns(
+        uint256 utilizationRate, 
+        uint256 currentBorrowRate
+    ) {
         if (totalDebt == 0) {
             utilizationRate = 0;
         } else {
@@ -208,13 +231,5 @@ library Types {
         } else {
             currentBorrowRate = reserve.borrowRate + vars.rateSlope1 * (utilizationRate/ vars.optimalUtilizationRate);
         }
-        if (totalDebt != 0) {
-            
-            currentLiquidityRate = borrowRate  * utilizationRate;
-        }
-        else{
-            currentLiquidityRate = 0;
-        }
-        return (currentLiquidityRate / 10**12, currentBorrowRate, utilizationRate);
     }
 } 

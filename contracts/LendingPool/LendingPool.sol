@@ -1,6 +1,7 @@
 //SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.0;
 
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "../ERC20/IERC20.sol";
 import {Types} from "./Types.sol";
 
@@ -65,7 +66,7 @@ contract LendingPool {
 
     constructor(
         address _sToken,
-        address _debtToken,
+        address DebtToken,
         address oraclePriceAddress,
         uint256 ltv,
         uint256 liquidityThreshold,
@@ -75,7 +76,7 @@ contract LendingPool {
     ) {
         reserve = Types.newReserveData(
             _sToken, 
-            _debtToken, 
+            DebtToken, 
             oraclePriceAddress, 
             ltv, 
             liquidityThreshold, 
@@ -87,11 +88,11 @@ contract LendingPool {
             rateSlope2
         );
 
-        debtToken = IERC20(_debtToken);
+        debtToken = IERC20(DebtToken);
         sToken = IERC20(_sToken);
     }
 
-    //when the contract init, the reserve.last_update_timestamp is 0, so need
+    //when the contract init, the reserve.lastUpdateTimestamp is 0, so need
     //test only
     function updateTimestampWhenInit() public {
         reserve.lastUpdatedTimestamp = block.timestamp;
@@ -249,7 +250,375 @@ contract LendingPool {
 
         updatePoolState(0, amount);
 
-        receiver.transfer(amount); 
+        (bool sent, ) = receiver.call{value: amount}("");
+        require(sent, "Failed to send Ether");
         emit Withdraw(sender, receiver, amount);
     }
+
+    /**
+    * @dev Allows users to borrow a specific `amount` of the reserve underlying asset, provided that the borrower
+    * was given enough allowance by a credit delegator on the
+    * corresponding debt token
+    * - E.g. User borrows 100 DOT passing as `onBehalfOf` his own address, receiving the 100 DOT in his wallet
+    *   and 100 debt tokens
+    * @param amount The amount to be borrowed
+    * @param onBehalfOf Address of the user who will receive the debt. Should be the address of the borrower itself
+    * calling the function if he wants to borrow against his own collateral, or the address of the credit delegator
+    * if he has been given credit delegation allowance
+    **/ 
+    function borrow(uint256 amount, address onBehalfOf) public {
+        require(amount != 0, "Invalid amount");
+
+        paratest = amount;
+        address sender = msg.sender;
+        address receiver = onBehalfOf;
+
+        uint256 creditBalance = delegateAllowance[receiver][sender];
+        require(
+            amount <= creditBalance, 
+            "Not enough available user balance"
+        );       
+        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) /Types.ONE * sToken.balanceOf(receiver)/Types.ONE ;
+        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) / Types.ONE_PERCENTAGE * debtToken.balanceOf(receiver)/Types.ONE;
+        Types.UserReserveData memory reserveData = usersData[receiver];
+        require(reserveData.lastUpdateTimestamp > 0, "user config does not exist");
+        if (interest > 0) {
+            reserveData.cumulatedLiquidityInterest += interest;
+            reserveData.cumulatedBorrowInterest += debtInterest;
+        }        
+        uint256 _creditBalance = sToken.balanceOf(receiver) /Types.ONE - debtToken.balanceOf(receiver)/Types.ONE + reserveData.cumulatedLiquidityInterest  - reserveData.cumulatedBorrowInterest ;
+        require(
+            amount/ Types.ONE <= _creditBalance, 
+            "Not enough available user balance"
+        );
+        reserveData.lastUpdateTimestamp = block.timestamp;
+
+        delegateAllowance[receiver][sender] = creditBalance - amount;
+        debtToken.mint(receiver, amount);
+        borrowStatus[sender][receiver] += amount;        
+
+        (bool sent, ) = sender.call{value: amount}("");
+        require(sent, "transfer failed");
+
+        updatePoolState(0, amount);
+
+        emit Borrow(sender, onBehalfOf, amount);
+    }
+
+    /**
+    * @notice Repays a borrowed `amount` on a specific reserve, burning the equivalent debt tokens owned
+    * - E.g. User repays 100 DOT, burning 100 debt tokens of the `onBehalfOf` address
+    * - Send the value in order to repay the debt for `asset`
+    * @param onBehalfOf Address of the user who will get his debt reduced/removed. Should be the address of the
+    * user calling the function if he wants to reduce/remove his own debt, or the address of any other
+    * other borrower whose debt should be removed
+    **/   
+    function repay(address onBehalfOf) public payable {
+        address sender = msg.sender;
+        address receiver = onBehalfOf;
+        uint256 amount = msg.value;
+        require(amount != 0, "Invalid amount");
+
+        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) / Types.ONE * sToken.balanceOf(receiver)/ Types.ONE ;
+        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) / Types.ONE_PERCENTAGE * debtToken.balanceOf(receiver)/ Types.ONE;
+        Types.UserReserveData memory reserveDataSender = usersData[receiver];
+        require(reserveDataSender.lastUpdateTimestamp > 0, "you have not borrowed any dot");
+
+        if (interest > 0) {
+            reserveDataSender.cumulatedLiquidityInterest += interest;
+            reserveDataSender.cumulatedBorrowInterest += debtInterest;
+        }
+        if (amount / Types.ONE <= reserveDataSender.cumulatedBorrowInterest) {
+            reserveDataSender.cumulatedBorrowInterest -= amount/Types.ONE;
+            
+        } else {
+            uint256 rest = amount/Types.ONE - reserveDataSender.cumulatedBorrowInterest;
+            reserveDataSender.cumulatedBorrowInterest = 0;
+            debtToken.burn(receiver, rest*Types.ONE);
+            borrowStatus[sender][receiver] -= rest;
+        }
+        reserveDataSender.lastUpdateTimestamp = block.timestamp;
+        
+        updatePoolState(amount,0);
+
+        emit Repay(onBehalfOf, sender, amount);
+    }
+
+    /**
+    optimalUtilizationRate,excessUtilizationRate,rateSlope1,rateSlope2,utilizationRate
+    **/
+    function getInterestRateData() public view returns(uint256, uint256, uint256, uint256, uint256) {
+        return (
+            interestSetting.optimalUtilizationRate, 
+            interestSetting.excessUtilizationRate, 
+            interestSetting.rateSlope1, 
+            interestSetting.rateSlope2, 
+            interestSetting.utilizationRate
+        );
+    } 
+
+    /**
+    * @dev delgator can delegate some their own credits which get by deposit funds to delegatee
+    * @param delegatee who can borrow without collateral
+    * @param amount placeholder
+    */ 
+    function delegate(address delegatee, uint256 amount) public {
+        address delegator = msg.sender;
+        delegateAllowance[delegator][delegatee] = amount;
+    }
+
+    function delegateAmount(address delegator, address delegatee) public view returns(uint256) {
+        return delegateAllowance[delegator][delegatee];
+    }
+
+    // // TODO do delegateFrom
+    // struct Delegator {
+    //     address delegator;
+    //     uint256 amount;
+    // }
+    // function delegateFrom(address user) public returns(address, uint256) {
+    //     address delegatee = msg.sender;
+    //     address delegators = vec![];
+    //     for v in delegate_allowance.iter() {
+    //         if v.0 .1 == delegatee {
+    //             delegators.push((v.0 .0, *v.1))
+    //         }
+    //     }
+    //     delegators
+    // }
+
+    // // TODO delegate_to
+    // pub fn delegate_to(&self, user: AccountId) -> Vec<(AccountId, Balance)> {
+    //     let delegator = env().caller();
+    //     let mut delegatees = vec![];
+    //     for v in delegate_allowance.iter() {
+    //         if v.0 .0 == delegator {
+    //             delegatees.push((v.0 .1, *v.1))
+    //         }
+    //     }
+    //     delegatees
+    // }
+
+    /**
+    * @dev Function to liquidate a non-healthy position collateral-wise, with Health Factor below 1
+    * - The caller (liquidator) covers `debtToCover` amount of debt of the user getting liquidated, and receives
+    *   a proportionally amount of the `collateralAsset` plus a bonus to cover market risk
+    * @param borrower The address of the borrower getting liquidated
+    * @param debtToCover The debt amount of borrowed `asset` the liquidator wants to cover
+    * @param receiveSToken `true` if the liquidators wants to receive the collateral sTokens, `false` if he wants
+    * to receive the underlying collateral asset directly
+    **/  
+    function liquidationCall(address borrower, uint256 debtToCover, bool receiveSToken) public {
+        address payable liquidator = payable(msg.sender);
+        
+        AggregatorV3Interface oracle = AggregatorV3Interface(reserve.oraclePriceAddress);
+        (, int256 result, , , ) = oracle.latestRoundData();
+        uint256 unitPrice = uint256(result);
+        uint256 borrowerTotalDebtInUsd = debtToken.balanceOf(borrower) / Types.ONE* unitPrice; 
+        uint256 borrowerTotalBalanceInusd = sToken.balanceOf(borrower)/ Types.ONE * unitPrice;
+        uint256 healthFactor = Types.calculateHealthFactorFromBalance(borrowerTotalBalanceInusd, borrowerTotalDebtInUsd, reserve.liquidityThreshold);
+        require(
+            healthFactor <= Types.HEALTH_FACTOR_LIQUIDATION_THRESHOLD, 
+            "LPCM Health factor not below threshold"
+        );
+        require(
+            borrowerTotalDebtInUsd > 0, 
+            "LPCM specified currency not borrowed by user"
+        );
+        uint256 maxLiquidatableDebt = borrowerTotalDebtInUsd * Types.LIQUIDATION_CLOSE_FACTOR_PERCENT;
+        (uint256 actualDebtToLiquidate, uint256 maxCollateralToLiquidate) = calculateDebtAndCollateralToLiquidate(borrower, debtToCover, maxLiquidatableDebt);
+ 
+        if (!receiveSToken) {
+            uint256 availableDot = address(this).balance; 
+            require(
+                // TODO Replace DOT references with MATIC
+                availableDot > maxCollateralToLiquidate, 
+                "LPCM not enough liquidity to liquidate"
+            );
+        } 
+        debtToken.burn(borrower, actualDebtToLiquidate);
+
+        updatePoolState(actualDebtToLiquidate, 0);
+
+        if (receiveSToken) {
+            require(sToken.transferFrom(borrower, liquidator, maxCollateralToLiquidate), "transferFrom failed");                   
+        } else {
+            updatePoolState(0, maxCollateralToLiquidate);
+
+            sToken.burn(borrower, maxCollateralToLiquidate);
+            (bool sent, ) = liquidator.call{value: maxCollateralToLiquidate}("");
+            require(sent, "transfer failed");
+        }
+
+        Types.UserReserveData memory borrowerData = usersData[borrower];
+        require(borrowerData.lastUpdateTimestamp > 0, "user config does not exist");
+        borrowerData.lastUpdateTimestamp = block.timestamp;
+        emit Liquidation(liquidator, borrower, actualDebtToLiquidate, maxCollateralToLiquidate);
+    }
+
+    function calculateDebtAndCollateralToLiquidate(address borrower, uint256 debtToCover, uint256 maxLiquidatableDebt) internal view returns(uint256, uint256) {
+        uint256 actualDebtToLiquidate;
+        if (debtToCover > maxLiquidatableDebt) {
+            actualDebtToLiquidate = maxLiquidatableDebt;
+        } else {
+            actualDebtToLiquidate = debtToCover;
+        }
+
+        (uint256 maxCollateralToLiquidate, uint256 debtAmountNeeded) = Types.calculateAvailableCollateralToLiquidate(reserve, actualDebtToLiquidate, sToken.balanceOf(borrower)/ Types.ONE);
+        if (debtAmountNeeded < actualDebtToLiquidate) {
+            actualDebtToLiquidate = debtAmountNeeded;
+        }
+
+        return (actualDebtToLiquidate, maxCollateralToLiquidate);
+    }
+    
+    // //#[ink(message)]
+    // pub fn is_user_reserve_healthy(&self, user: AccountId) -> uint256{
+    //     let debtToken: IERC20 =  FromAccountId::from_account_id(reserve.debt_token_address);
+    //     let sToken: IERC20 = FromAccountId::from_account_id(reserve.stoken_address);
+    //     let mut oracle: Price = FromAccountId::from_account_id(reserve.oracle_price_address);
+    //     oracle.update().expect("Failed to update price");
+    //     let unitPrice = oracle.get();
+    //     //if user not exist should return 0
+    //     if !usersData.get(&user).is_some(){
+    //         return 0;
+    //     };
+    //     let _total_collateral_in_usd = unitPrice * sToken.balanceOf(user)/ Types.ONE;
+    //     let _totalDebt_in_usd = unitPrice * debtToken.balanceOf(user)/ Types.ONE;
+    //     let healthFactor = calculateHealthFactorFromBalance(_total_collateral_in_usd, _totalDebt_in_usd, reserve.liquidityThreshold);
+    //     healthFactor
+    // }
+
+    // #[ink(message)]
+    // pub fn oracel_test(&self,a:u64) -> uint256{
+    //     let mut oracle: Price = FromAccountId::from_account_id(reserve.oracle_price_address);
+    //     //oracle.update().expect("Failed to update price");
+    //     let unitPrice = oracle.get();
+    //     unitPrice
+    // }
+
+    // /**
+    // * Get reserve data * total market supply * available liquidity 
+    // * total lending * utilization rate 
+    // **/
+    // #[ink(message)]
+    // pub fn get_reserveData_ui(&self) -> (uint256, uint256, uint256, uint256){
+    //     let debtToken: IERC20 =  FromAccountId::from_account_id(reserve.debt_token_address);
+    //     let sToken: IERC20 = FromAccountId::from_account_id(reserve.stoken_address);
+    //     let total_stoken: Balance = sToken.total_supply();
+    //     let totalDtoken: Balance = debtToken.total_supply();
+    //     let available_liquidity = total_stoken - totalDtoken;
+    //     //todo
+    //     let utilizationRate = totalDtoken * 1000_000_000 / total_stoken  * 100 ;
+    //     (total_stoken, available_liquidity, totalDtoken, utilizationRate)
+    // }
+
+    // /**
+    // * liquidity_rate * borrow_rate * ltv * liquidityThreshold
+    // * liquidity_bonus * decimals * lastUpdatedTimestamp*liquidity_index
+    // **/
+    // #[ink(message)]
+    // pub fn get_reserveData(&self) -> (uint256, uint256, uint256, uint256, uint256, uint256, u64,uint256){
+    //     return (
+    //         reserve.liquidity_rate, reserve.borrow_rate,
+    //         reserve.ltv, reserve.liquidityThreshold, 
+    //         reserve.liquidity_bonus, reserve.decimals, 
+    //         reserve.lastUpdatedTimestamp,reserve.liquidity_index
+    //     )
+    // } 
+
+    // /**
+    // * Get user reserve data * total deposit * total borrow * deposit interest
+    // * borrow interest *current timestamp 
+    // **/        
+    // #[ink(message)]
+    // pub fn get_user_reserveData_ui(&self, user: AccountId) -> (uint256, uint256, uint256, uint256, u64) {
+    //     let sToken: IERC20 = FromAccountId::from_account_id(reserve.stoken_address);
+    //     let debtToken: IERC20 = FromAccountId::from_account_id(reserve.debt_token_address);
+    //     //带有12个0的精度
+    //     let user_stoken: Balance = sToken.balanceOf(user)/ Types.ONE;
+    //     let userDtoken: Balance = debtToken.balanceOf(user)/ Types.ONE;
+    //     uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) / Types.ONE * user_stoken;
+    //     let debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) /ONE_PERCENTAGE * userDtoken;
+    //     let data = usersData.get(&user);
+    //     match data {
+    //         None => return (0, 0, 0, 0, 0),
+    //         Some(someData) => {
+    //             let cumulatedLiquidityInterest = someData.cumulatedLiquidityInterest + interest;
+    //             let cumulatedBorrowInterest = someData.cumulatedBorrowInterest + debtInterest;
+    //             let current_timestamp = Self::env().block_timestamp();
+    //             return (user_stoken, cumulatedLiquidityInterest, userDtoken, cumulatedBorrowInterest, current_timestamp);
+    //         },
+    //     }
+    // }
+
+    // //should removew the user para to protect other user privacy
+    // #[ink(message)]
+    // pub fn get_user_borrow_status(&self, user: AccountId)-> Vec<(AccountId,Balance)>{
+    //     let sender = env().caller();
+    //     let mut result = Vec::new();
+    //     for ((borrower,owner),value) in borrowStatus.iter(){
+    //         if *borrower == sender{
+    //             result.push((*owner,*value));
+    //         }
+    //     }
+    //     result
+    // }
+
+    // //暂不开放
+    // pub fn set_reserve_configuration(&mut self, ltv: uint256, liquidityThreshold: uint256, liquidity_bonus: uint256){
+    //     reserve.ltv = ltv;
+    //     reserve.liquidityThreshold = liquidityThreshold;
+    //     reserve.liquidity_bonus = liquidity_bonus;
+    // }
+    // //暂不开放
+    // pub fn set_interest_rateData(
+    //     &mut self, optimalUtilizationRate:uint256, 
+    //     rateSlope1: uint256, rateSlope2:uint256)
+    //     {
+    //         interestSetting.optimalUtilizationRate = optimalUtilizationRate;
+    //         interestSetting.rateSlope1 = rateSlope1;
+    //         interestSetting.rateSlope2 = rateSlope2;                
+    // }
+    // //暂不开放
+    // pub fn set_kycData(&mut self, name: Option<String>, email: Option<String>) {
+    //     let user = env().caller();
+    //     let entry = users_kycData.entry(user);
+    //     let kycData = entry.or_insert(Default::default());
+    //     if let Some(user_name) = name {
+    //         kycData.name = user_name;
+    //     }
+    //     if let Some(user_email) = email {
+    //         kycData.email = user_email;
+    //     }         
+    // }
+    // //暂不开放
+    // pub fn get_kycData(&self, user: AccountId) -> Option<UserKycData> {
+    //     users_kycData.get(&user).cloned()
+    // }
+    // //暂不开放
+    // pub fn get_the_unhelthy_reserves(&self)-> Option<Vec<AccountId>>{
+    //     let debtToken: IERC20 =  FromAccountId::from_account_id(reserve.debt_token_address);
+    //     let sToken: IERC20 = FromAccountId::from_account_id(reserve.stoken_address);
+    //     let mut oracle: Price = FromAccountId::from_account_id(reserve.oracle_price_address);
+    //     oracle.update().expect("Failed to update price");
+    //     let unitPrice = oracle.get();
+    //     let mut result = Vec::new();
+    //     for (user, status) in users.iter(){
+    //         if *status != 1 {
+    //             //1表示这个用户有钱存在池子里 是我们的用户，0表示用户把所有钱都取走了，相当于不是我们的用户了
+    //             continue
+    //         }
+    //         let _total_collateral_in_usd = unitPrice * sToken.balanceOf(*user)/ Types.ONE;
+    //         let _totalDebt_in_usd = unitPrice * debtToken.balanceOf(*user)/ Types.ONE;
+    //         if calculateHealthFactorFromBalance(_total_collateral_in_usd, _totalDebt_in_usd, reserve.liquidityThreshold) <HEALTH_FACTOR_LIQUIDATION_THRESHOLD {
+    //             result.push(*user)
+    //         }
+    //     }
+    //     if result.is_empty(){
+    //         None
+    //     }else{
+    //         Some(result)
+    //     }
+    // } 
 }
