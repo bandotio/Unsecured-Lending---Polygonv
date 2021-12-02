@@ -143,7 +143,7 @@ library Types {
    *   otherwise it might fail.
    * @param vars The data of the collateral reserve
    * @param debtToCover The debt amount of borrowed `asset` the liquidator wants to cover
-   * @param userCollateralBalance The collateral balance for DOT of the user being liquidated
+   * @param userCollateralBalance The collateral balance for MATIC of the user being liquidated
    * @return collateral_amount: The maximum amount that is possible to liquidate given all the liquidation constraints
    *                           (user balance, close factor)
    *         debt_amount_needed: The amount to repay with the liquidation

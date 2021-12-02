@@ -54,11 +54,22 @@ contract LendingPool {
 
     Types.ReserveData public reserve;
     mapping(address => Types.UserReserveData) public usersData;
+
     mapping(address => mapping(address => uint256)) public delegateAllowance;
+    // Following two vars are only for iterating
+    mapping(address=>address[]) delegatorsForDelegatee;
+    mapping(address=>address[]) delegateesForDelegator;
+
     mapping(address => Types.UserKycData) usersKycData;
     Types.InterestRateData public interestSetting;
+
     mapping(address => bool) users;
+    // only for iterating
+    address[] usersList;
+
     mapping(address=>mapping(address => uint256)) public borrowStatus;
+    // only for iterating
+    mapping(address=>address[]) borrowOwners;
     uint256 public paratest;
 
     IERC20 sToken;
@@ -130,6 +141,7 @@ contract LendingPool {
         userReserveData.lastUpdateTimestamp = block.timestamp;
         sToken.mint(receiver, amount);
         users[receiver] = true;
+        usersList.push(receiver);
 
         emit Deposit(sender, receiver, amount);
     }
@@ -245,7 +257,6 @@ contract LendingPool {
         } else {
             uint256 rest = amount / Types.ONE - reserveData.cumulatedLiquidityInterest;
             reserveData.cumulatedLiquidityInterest = 0;
-            // TODO check if this burn will be error free
             sToken.burn(sender, rest*Types.ONE); //.expect("sToken burn failed");
         }
         reserveData.lastUpdateTimestamp = block.timestamp;
@@ -261,7 +272,7 @@ contract LendingPool {
     * @dev Allows users to borrow a specific `amount` of the reserve underlying asset, provided that the borrower
     * was given enough allowance by a credit delegator on the
     * corresponding debt token
-    * - E.g. User borrows 100 DOT passing as `onBehalfOf` his own address, receiving the 100 DOT in his wallet
+    * - E.g. User borrows 100 MATIC passing as `onBehalfOf` his own address, receiving the 100 MATIC in his wallet
     *   and 100 debt tokens
     * @param amount The amount to be borrowed
     * @param onBehalfOf Address of the user who will receive the debt. Should be the address of the borrower itself
@@ -298,6 +309,7 @@ contract LendingPool {
         delegateAllowance[receiver][sender] = creditBalance - amount;
         debtToken.mint(receiver, amount);
         borrowStatus[sender][receiver] += amount;        
+        borrowOwners[sender].push(receiver);
 
         (bool sent, ) = sender.call{value: amount}("");
         require(sent, "transfer failed");
@@ -309,7 +321,7 @@ contract LendingPool {
 
     /**
     * @notice Repays a borrowed `amount` on a specific reserve, burning the equivalent debt tokens owned
-    * - E.g. User repays 100 DOT, burning 100 debt tokens of the `onBehalfOf` address
+    * - E.g. User repays 100 MATIC, burning 100 debt tokens of the `onBehalfOf` address
     * - Send the value in order to repay the debt for `asset`
     * @param onBehalfOf Address of the user who will get his debt reduced/removed. Should be the address of the
     * user calling the function if he wants to reduce/remove his own debt, or the address of any other
@@ -324,7 +336,7 @@ contract LendingPool {
         uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) / Types.ONE * sToken.balanceOf(receiver)/ Types.ONE ;
         uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) / Types.ONE_PERCENTAGE * debtToken.balanceOf(receiver)/ Types.ONE;
         Types.UserReserveData memory reserveDataSender = usersData[receiver];
-        require(reserveDataSender.lastUpdateTimestamp > 0, "you have not borrowed any dot");
+        require(reserveDataSender.lastUpdateTimestamp > 0, "you have not borrowed any matic");
 
         if (interest > 0) {
             reserveDataSender.cumulatedLiquidityInterest += interest;
@@ -367,39 +379,37 @@ contract LendingPool {
     function delegate(address delegatee, uint256 amount) public {
         address delegator = msg.sender;
         delegateAllowance[delegator][delegatee] = amount;
+
+        delegatorsForDelegatee[delegatee].push(delegator);
+        delegateesForDelegator[delegator].push(delegatee);
     }
 
     function delegateAmount(address delegator, address delegatee) public view returns(uint256) {
         return delegateAllowance[delegator][delegatee];
     }
 
-    // // TODO do delegateFrom
-    // struct Delegator {
-    //     address delegator;
-    //     uint256 amount;
-    // }
-    // function delegateFrom(address user) public returns(address, uint256) {
-    //     address delegatee = msg.sender;
-    //     address delegators = vec![];
-    //     for v in delegate_allowance.iter() {
-    //         if v.0 .1 == delegatee {
-    //             delegators.push((v.0 .0, *v.1))
-    //         }
-    //     }
-    //     delegators
-    // }
+    
+    function delegateFrom() public view returns(
+        address[] memory delegators, 
+        uint256[] memory amounts
+    ) {
+        delegators = delegatorsForDelegatee[msg.sender];
+        amounts = new uint256[](delegators.length);
 
-    // // TODO delegate_to
-    // pub fn delegate_to(&self, user: AccountId) -> Vec<(AccountId, Balance)> {
-    //     let delegator = env().caller();
-    //     let mut delegatees = vec![];
-    //     for v in delegate_allowance.iter() {
-    //         if v.0 .0 == delegator {
-    //             delegatees.push((v.0 .1, *v.1))
-    //         }
-    //     }
-    //     delegatees
-    // }
+        for (uint256 i = 0; i < delegators.length; i++) 
+            amounts[i] = delegateAllowance[delegators[i]][msg.sender];
+    }
+
+    function delegateTo() public view returns(
+       address[] memory delegatees, 
+       uint[] memory amounts
+    ) {
+        delegatees = delegateesForDelegator[msg.sender];
+        amounts = new uint256[](delegatees.length);
+
+        for (uint256 i = 0; i < delegatees.length; i++) 
+            amounts[i] = delegateAllowance[msg.sender][delegatees[i]];
+    }
 
     /**
     * @dev Function to liquidate a non-healthy position collateral-wise, with Health Factor below 1
@@ -430,10 +440,9 @@ contract LendingPool {
         (uint256 actualDebtToLiquidate, uint256 maxCollateralToLiquidate) = calculateDebtAndCollateralToLiquidate(borrower, debtToCover, maxLiquidatableDebt);
  
         if (!receiveSToken) {
-            uint256 availableDot = address(this).balance; 
+            uint256 availableMatic = address(this).balance; 
             require(
-                // TODO Replace DOT references with MATIC
-                availableDot > maxCollateralToLiquidate, 
+                availableMatic > maxCollateralToLiquidate, 
                 "LPCM not enough liquidity to liquidate"
             );
         } 
@@ -525,18 +534,18 @@ contract LendingPool {
         } else return (0, 0, 0, 0, 0);
     }
 
-    // //should removew the user para to protect other user privacy
-    // function getUserBorrowStatus(address user) public returns(
-    //     address[] users, 
-    //     uint256[] amounts
-    // ) {
-        // TODO 
-    //     for ((borrower,owner),value) in borrowStatus.iter(){
-    //         if (borrower == msg.sender ){
-    //             result.push((*owner,*value));
-    //         }
-    //     }
-    // }
+    //should remove the user para to protect other user privacy
+    function getUserBorrowStatus() public view returns(
+        address[] memory addresses, 
+        uint256[] memory amounts
+    ) {
+        addresses = borrowOwners[msg.sender];
+        amounts = new uint256[](addresses.length);
+
+        for (uint256 i = 0; i < borrowOwners[msg.sender].length; i++) {
+            amounts[i] = borrowStatus[msg.sender][addresses[i]];
+        }
+    }
 
     function setReserveConfiguration(
         uint256 ltv, 
@@ -566,24 +575,25 @@ contract LendingPool {
 
         usersKycData[msg.sender] = Types.UserKycData ({name: name, email: email});      
     }
- 
-    // function getTheUnhelthyReserves() public returns(address[]) {
-    //     (, int256 result, , , ) = oracle.latestRoundData();
-    //     uint256 unitPrice = uint256(result);
-    //     address[] result;
+    
+    // TODO optimizations may be possible 
+    function getTheUnhealthyReserves() public view returns(uint256 length, address[] memory addresses) {
+        (, int256 result, , , ) = oracle.latestRoundData();
+        uint256 unitPrice = uint256(result);
 
-    //     // TODO add ways to iterate
-    //     for (user, status) in users.iter(){
-    //         if (status != 1) {
-    //             continue
-    //         }
-    //         let _totalCollateralInUsd = unitPrice * sToken.balanceOf(user) / Types.ONE;
-    //         let _totalDebtInUsd = unitPrice * debtToken.balanceOf(user) / Types.ONE;
-    //         if (calculateHealthFactorFromBalance(_totalCollateralInUsd, _totalDebtInUsd, reserve.liquidityThreshold) < Types.HEALTH_FACTOR_LIQUIDATION_THRESHOLD) {
-    //             result.push(user)
-    //         }
-    //     }
+        addresses = new address[](usersList.length);
+
+        for (uint256 i = 0; i < usersList.length; i++) {
+            address user = usersList[i];
+            if (users[user])
+                continue;
         
-    //     return result;
-    // } 
+            uint256 _totalCollateralInUsd = unitPrice * sToken.balanceOf(user) / Types.ONE;
+            uint256 _totalDebtInUsd = unitPrice * debtToken.balanceOf(user) / Types.ONE;
+            if (Types.calculateHealthFactorFromBalance(_totalCollateralInUsd, _totalDebtInUsd, reserve.liquidityThreshold) < Types.HEALTH_FACTOR_LIQUIDATION_THRESHOLD) {
+                addresses[length++] = user;
+            }
+            return (length, addresses);
+        }
+    } 
 }
