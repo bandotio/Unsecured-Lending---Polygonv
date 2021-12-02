@@ -9,7 +9,7 @@ library Types {
     uint256 constant ONE = 10**12;
     uint256 constant ONE_PERCENTAGE = 10**10;
 
-    uint256 constant ONE_YEAR = 365*24*60*60*60*1000; // year in milliseconds
+    uint256 constant ONE_YEAR = 365*24*60*60*1000; // year in milliseconds
     uint256 constant LIQUIDATION_CLOSE_FACTOR_PERCENT = 50 * ONE_PERCENTAGE; // 50%
     uint256 constant HEALTH_FACTOR_LIQUIDATION_THRESHOLD = ONE;
 

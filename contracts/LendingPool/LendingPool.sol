@@ -67,7 +67,7 @@ contract LendingPool {
 
     constructor(
         address _sToken,
-        address debtToken,
+        address _debtToken,
         address oraclePriceAddress,
         uint256 ltv,
         uint256 liquidityThreshold,
@@ -77,7 +77,7 @@ contract LendingPool {
     ) {
         reserve = Types.newReserveData(
             _sToken, 
-            debtToken, 
+            _debtToken, 
             oraclePriceAddress, 
             ltv, 
             liquidityThreshold, 
@@ -89,7 +89,7 @@ contract LendingPool {
             rateSlope2
         );
 
-        debtToken = IERC20(debtToken);
+        debtToken = IERC20(_debtToken);
         sToken = IERC20(_sToken);
         oracle = AggregatorV3Interface(oraclePriceAddress);
     }
@@ -473,7 +473,7 @@ contract LendingPool {
         return (actualDebtToLiquidate, maxCollateralToLiquidate);
     }
     
-    function isUserReserveHealthy(address user) public returns(uint256) {
+    function isUserReserveHealthy(address user) public view returns(uint256) {
         (, int256 result, , , ) = oracle.latestRoundData();
         uint256 unitPrice = uint256(result);
 
@@ -484,11 +484,11 @@ contract LendingPool {
 
         uint256 _totalCollateralInUsd = unitPrice * sToken.balanceOf(user) / Types.ONE;
         uint256 _totalDebtInUsd = unitPrice * debtToken.balanceOf(user) / Types.ONE;
-        uint256 healthFactor = calculateHealthFactorFromBalance(_totalCollateralInUsd, _totalDebtInUsd, reserve.liquidityThreshold);
+        uint256 healthFactor = Types.calculateHealthFactorFromBalance(_totalCollateralInUsd, _totalDebtInUsd, reserve.liquidityThreshold);
         return healthFactor;
     }
 
-    function oracleTest() public returns(uint256) {
+    function oracleTest() public view returns(uint256) {
         (, int256 result, , , ) = oracle.latestRoundData();
         return uint256(result);
     }
@@ -497,12 +497,12 @@ contract LendingPool {
     * Get reserve data * total market supply * available liquidity 
     * total lending * utilization rate 
     **/
-    function getReserveDataUi() public returns(uint256, uint256, uint256, uint256) {
+    function getReserveDataUi() public view returns(uint256, uint256, uint256, uint256) {
         uint256 totalSToken = sToken.totalSupply();
         uint256 totalDToken = debtToken.totalSupply();
-        let availableLiquidity = totalSToken - totalDToken;
+        uint256 availableLiquidity = totalSToken - totalDToken;
         
-        let utilizationRate = totalDToken * 1000000000 / totalSToken  * 100 ;
+        uint256 utilizationRate = totalDToken * 1000000000 / totalSToken  * 100 ;
         return (totalSToken, availableLiquidity, totalDToken, utilizationRate);
     }
 
@@ -510,12 +510,12 @@ contract LendingPool {
     * Get user reserve data * total deposit * total borrow * deposit interest
     * borrow interest *current timestamp 
     **/        
-    function getUserReserveDataUi(address user) public returns(uint256, uint256, uint256, uint256, uint256) {
+    function getUserReserveDataUi(address user) public view returns(uint256, uint256, uint256, uint256, uint256) {
         uint256 userSToken = sToken.balanceOf(user) / Types.ONE;
         uint256 userDToken = debtToken.balanceOf(user) / Types.ONE;
         uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) / Types.ONE * userSToken;
-        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) /ONE_PERCENTAGE * userDToken;
-        uint256 data = usersData[user];
+        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) / Types.ONE_PERCENTAGE * userDToken;
+        Types.UserReserveData memory data = usersData[user];
 
         if (data.lastUpdateTimestamp > 0) {
             uint256 cumulatedLiquidityInterest = data.cumulatedLiquidityInterest + interest;
@@ -558,13 +558,13 @@ contract LendingPool {
             interestSetting.rateSlope2 = rateSlope2;                
     }
 
-    function setKycData(string name, string email) public {
-        if (name == "") 
+    function setKycData(string memory name, string memory email) public {
+        if (bytes(name).length == 0) 
             name = usersKycData[msg.sender].name;
-        if (email == "") 
+        if (bytes(email).length == 0) 
             email = usersKycData[msg.sender].email;
 
-        usersKycData[msg.sender] = Types.UserKYCData ({name: name, email: email});      
+        usersKycData[msg.sender] = Types.UserKycData ({name: name, email: email});      
     }
  
     // function getTheUnhelthyReserves() public returns(address[]) {
