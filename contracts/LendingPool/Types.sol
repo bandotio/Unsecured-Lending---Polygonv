@@ -211,7 +211,7 @@ library Types {
         else {
             currentLiquidityRate = 0;
         }
-        return (currentLiquidityRate / 10**12, currentBorrowRate, utilizationRate);
+        return (currentLiquidityRate / ONE, currentBorrowRate, utilizationRate);
     }
 
     // for use with only calculateInterestRates. seperated due to Solidity's 
@@ -228,7 +228,7 @@ library Types {
         if (totalDebt == 0) {
             utilizationRate = 0;
         } else {
-            utilizationRate = (totalDebt * 10**12 + (currentAvailableLiqudity + totalDebt) /2) / (currentAvailableLiqudity + totalDebt);
+            utilizationRate = (totalDebt * ONE + (currentAvailableLiqudity + totalDebt) /2) / (currentAvailableLiqudity + totalDebt);
         }
         if (utilizationRate > vars.optimalUtilizationRate) {
             uint256 excessUtilizationRateRatio = utilizationRate - vars.optimalUtilizationRate / vars.excessUtilizationRate;
