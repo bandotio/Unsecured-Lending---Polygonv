@@ -5,11 +5,13 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 library Types {
+    // Decimals adjusted for MATIC/USD pair on Chainlink
+    uint8 constant DECIMALS = 8;
     /// The representation of the number one as a precise number as 10^12
-    uint256 constant ONE = 10**12;
-    uint256 constant ONE_PERCENTAGE = 10**10;
+    uint256 constant ONE = 10**DECIMALS;
+    uint256 constant ONE_PERCENTAGE = ONE / 100;
 
-    uint256 constant ONE_YEAR = 365*24*60*60*1000; // year in milliseconds
+    uint256 constant ONE_YEAR = 365 days;
     uint256 constant LIQUIDATION_CLOSE_FACTOR_PERCENT = 50 * ONE_PERCENTAGE; // 50%
     uint256 constant HEALTH_FACTOR_LIQUIDATION_THRESHOLD = ONE;
 
@@ -48,7 +50,7 @@ library Types {
             ltv: _ltv * ONE_PERCENTAGE,
             liquidityThreshold: _liquidityThreshold * ONE_PERCENTAGE,
             liquidityBonus:_liquidityBonus * ONE_PERCENTAGE,
-            decimals: 12,
+            decimals: DECIMALS,
             liquidityIndex: BASE_LIQUIDITY_INDEX,
             lastUpdatedTimestamp: 0
         });
@@ -79,7 +81,7 @@ library Types {
     struct UserReserveData {
         uint256 cumulatedLiquidityInterest;
         uint256 cumulatedBorrowInterest;
-        uint256 lastUpdateTimestamp;
+        uint256 lastUpdatedTimestamp;
     }
 
     struct UserKycData {
@@ -111,6 +113,8 @@ library Types {
     ) public view returns(bool) {
         IERC20 debtToken = IERC20(vars.debtTokenAddress);
         IERC20 sToken = IERC20(vars.sTokenAddress);
+        require(amount <= sToken.balanceOf(user), "amount > balanceOf(user)");
+
         if (debtToken.balanceOf(user) == 0) return true;
         if (vars.liquidityThreshold == 0) return true;
 
@@ -144,22 +148,22 @@ library Types {
    * @param vars The data of the collateral reserve
    * @param debtToCover The debt amount of borrowed `asset` the liquidator wants to cover
    * @param userCollateralBalance The collateral balance for MATIC of the user being liquidated
-   * @return collateral_amount: The maximum amount that is possible to liquidate given all the liquidation constraints
+   * // TODO correct NatSpec for return 
+   * return (uint, uint) collateralAmount: The maximum amount that is possible to liquidate given all the liquidation constraints
    *                           (user balance, close factor)
-   *         debt_amount_needed: The amount to repay with the liquidation
+   *         debtAmountNeeded: The amount to repay with the liquidation
     **/
     function calculateAvailableCollateralToLiquidate(
         ReserveData memory vars,
         uint256 debtToCover, 
         uint256 userCollateralBalance
-    ) public view returns(uint256, uint256) {
-        uint256 collateralAmount; 
-        uint256 debtAmountNeeded;
-
+    ) public view returns(
+        uint256 collateralAmount, 
+        uint256 debtAmountNeeded
+    ) {
         AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
         (, int256 result, , , ) = oracle.latestRoundData();
         uint256 unitPrice = uint256(result);
-
         uint256 debtAssetPrice = 1;
 
         uint256 maxAmountCollateralToLiquidate = debtAssetPrice * debtToCover * vars.liquidityBonus / unitPrice;
@@ -170,7 +174,6 @@ library Types {
             collateralAmount = maxAmountCollateralToLiquidate;
             debtAmountNeeded = debtToCover;
         }
-        return (collateralAmount, debtAmountNeeded);
     }
 
     /**
@@ -211,6 +214,8 @@ library Types {
         return (currentLiquidityRate / 10**12, currentBorrowRate, utilizationRate);
     }
 
+    // for use with only calculateInterestRates. seperated due to Solidity's 
+    // restrictions on number of local vars
     function calculateUtilizationAndBorrowRate(
         ReserveData memory reserve,
         InterestRateData memory vars,
