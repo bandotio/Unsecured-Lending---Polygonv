@@ -18,6 +18,7 @@ library Types {
     uint256 constant BASE_LIQUIDITY_RATE = 10 * ONE_PERCENTAGE; // 10% 
     uint256 constant BASE_BORROW_RATE = 18 * ONE_PERCENTAGE; // 18%
     uint256 constant BASE_LIQUIDITY_INDEX = ONE; // 1
+    uint256 constant BASE_BORROW_INDEX = ONE; // 1
 
     struct ReserveData {
         uint256 liquidityRate;
@@ -31,6 +32,7 @@ library Types {
         uint256 decimals;
         uint256 liquidityIndex;
         uint256 lastUpdatedTimestamp;
+        uint256 borrowIndex;
     }
     
     function newReserveData(
@@ -52,7 +54,8 @@ library Types {
             liquidityBonus:_liquidityBonus * ONE_PERCENTAGE,
             decimals: DECIMALS,
             liquidityIndex: BASE_LIQUIDITY_INDEX,
-            lastUpdatedTimestamp: 0
+            lastUpdatedTimestamp: 0,
+            borrowIndex: BASE_BORROW_INDEX
         });
     }
 
@@ -195,6 +198,7 @@ library Types {
         uint256 borrowRate
     ) public view returns(uint256, uint256, uint256) {
         IERC20 sToken = IERC20(reserve.sTokenAddress);
+        totalDebt /= ONE; // TODO find reason why divided
         uint256 currentAvailableLiqudity = sToken.totalSupply() + liquidityAdded - liquidityTaken;
         uint256 currentLiquidityRate = reserve.liquidityRate;
         
@@ -206,12 +210,12 @@ library Types {
         );
         
         if (totalDebt != 0) {
-            currentLiquidityRate = borrowRate  * utilizationRate;
+            currentLiquidityRate = borrowRate  * utilizationRate / ONE;
         }
         else {
             currentLiquidityRate = 0;
         }
-        return (currentLiquidityRate / ONE, currentBorrowRate, utilizationRate);
+        return (currentLiquidityRate, currentBorrowRate, utilizationRate);
     }
 
     // for use with only calculateInterestRates. seperated due to Solidity's 
@@ -228,7 +232,7 @@ library Types {
         if (totalDebt == 0) {
             utilizationRate = 0;
         } else {
-            utilizationRate = (totalDebt * ONE + (currentAvailableLiqudity + totalDebt) /2) / (currentAvailableLiqudity + totalDebt);
+            utilizationRate = totalDebt * ONE / (currentAvailableLiqudity + totalDebt);
         }
         if (utilizationRate > vars.optimalUtilizationRate) {
             uint256 excessUtilizationRateRatio = utilizationRate - vars.optimalUtilizationRate / vars.excessUtilizationRate;
