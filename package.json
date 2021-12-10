@@ -18,13 +18,14 @@
   },
   "homepage": "https://github.com/bandotio/Unsecured-Lending---Polygonv#readme",
   "dependencies": {
-    "@chainlink/contracts": "^0.2.2",
-    "@openzeppelin/contracts": "^4.4.0",
+    "dotenv": "^10.0.0",
     "hardhat": "^2.7.0"
   },
   "devDependencies": {
+    "@chainlink/contracts": "^0.2.2",
     "@nomiclabs/hardhat-ethers": "^2.0.2",
     "@nomiclabs/hardhat-waffle": "^2.0.1",
+    "@openzeppelin/contracts": "^4.4.0",
     "chai": "^4.3.4",
     "ethereum-waffle": "^3.4.0",
     "ethers": "^5.5.1",

@@ -80,7 +80,7 @@ contract LendingPool {
     IERC20 sToken;
     IERC20 debtToken;
     AggregatorV3Interface oracle;
-
+    
     constructor(
         address _sToken,
         address _debtToken,
@@ -184,7 +184,7 @@ contract LendingPool {
             timeDifferenceMinusTwo = 0;
         }
 
-        // TODO flawed, all multiplications should be before division
+        // TODO flawed in the rust contracts, all multiplications should be before division
         // uint256 ratePerSecond = rate / Types.ONE_YEAR;
         // uint256 basePowerTwo = ratePerSecond**2 ;
         // uint256 basePowerThree = ratePerSecond**3;

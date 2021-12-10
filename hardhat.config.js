@@ -1,5 +1,8 @@
+// const env = require("hardhat");
+
 require("@nomiclabs/hardhat-waffle");
 require("hardhat-contract-sizer");
+require('dotenv').config()
 
 // This is a sample Hardhat task. To learn how to create your own go to
 // https://hardhat.org/guides/create-task.html
@@ -18,6 +21,13 @@ task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
  * @type import('hardhat/config').HardhatUserConfig
  */
 module.exports = {
+  networks: {
+    hardhat: {
+      forking: {
+        url: process.env.POLYGON_MAINNET_ENDPOINT
+      }
+    }
+  },
   solidity: {
     version: "0.8.4",
     settings: {

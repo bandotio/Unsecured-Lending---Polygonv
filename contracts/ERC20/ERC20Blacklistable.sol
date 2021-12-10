@@ -27,15 +27,16 @@ contract ERC20Blacklistable is ERC20PresetMinterPauser, BlackList {
     }
 
     function transferOwnership(address newOwner) public virtual override onlyOwner {
-        _transferOwnership(newOwner);
-
         _grantRole(DEFAULT_ADMIN_ROLE, newOwner);
+        _revokeRole(DEFAULT_ADMIN_ROLE, owner());
+        
+        _revokeRole(MINTER_ROLE, owner());
+        _revokeRole(PAUSER_ROLE, owner());
+
         _setupRole(MINTER_ROLE, newOwner);
         _setupRole(PAUSER_ROLE, newOwner);
 
-        _revokeRole(MINTER_ROLE, owner());
-        _revokeRole(PAUSER_ROLE, owner());
-        _revokeRole(DEFAULT_ADMIN_ROLE, owner());
+        _transferOwnership(newOwner);
     }
 
     function decimals() public view virtual override returns (uint8) {

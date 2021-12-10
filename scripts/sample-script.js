@@ -4,7 +4,7 @@
 // When running the script with `npx hardhat run <script>` you'll find the Hardhat
 // Runtime Environment's members available in the global scope.
 const hre = require("hardhat");
-
+const LP_ABI = require("../artifacts/contracts/LendingPool/LendingPool.sol/LendingPool.json")
 async function main() {
   // Hardhat always runs the compile task when running scripts with its command
   // line interface.
@@ -14,12 +14,40 @@ async function main() {
   // await hre.run('compile');
 
   // We get the contract to deploy
-  const Greeter = await hre.ethers.getContractFactory("Greeter");
-  const greeter = await Greeter.deploy("Hello, Hardhat!");
+  const Types = await hre.ethers.getContractFactory("Types")
+  const types = await Types.deploy()
+  await types.deployed()
 
-  await greeter.deployed();
+  const Token = await hre.ethers.getContractFactory("ERC20Blacklistable")
 
-  console.log("Greeter deployed to:", greeter.address);
+  const sToken = await Token.deploy("0", "S-Token", "STOKEN", 18)
+  const dToken = await Token.deploy("0", "d-Token", "STOKEN", 18)
+  await sToken.deployed()
+  await dToken.deployed()
+
+  // const TestOracle = await hre.ethers.getContractFactory("TestAggregatorV3");
+  // const oracle = await TestOracle.deploy()
+  // await oracle.deployed()
+
+  const LendingPool = await hre.ethers.getContractFactory("LendingPool", {
+    libraries: {
+      Types: types.address,
+    }
+  });
+  const lendingPool = await LendingPool.deploy(
+    sToken.address, dToken.address,
+    "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0", // Make contract according to AggregatorV3Interface
+    "80", "85", "110", "65", "10", "100"
+  );
+
+  await lendingPool.deployed();
+
+  // const LENDING_POOL_ADDRESS = "0x737b8F095E3c575a6Ae5FE1711AdB8F271E20269"
+  // const lendingPool = hre.ethers.Contract(LENDING_POOL_ADDRESS, LP_ABI, hre.)
+  console.log("LendingPool deployed to:", lendingPool.address);
+
+  let blockTimestamp = await lendingPool.getBlockTimestamp()
+  console.log(blockTimestamp.toString(), (await lendingPool.getNormalizedIncome(blockTimestamp)).toString())
 }
 
 // We recommend this pattern to be able to use async/await everywhere
