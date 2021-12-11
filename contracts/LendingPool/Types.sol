@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "hardhat/console.sol";
 
 library Types {
     // Decimals adjusted for MATIC/USD pair on Chainlink
@@ -15,7 +16,11 @@ library Types {
     uint256 constant LIQUIDATION_CLOSE_FACTOR_PERCENT = 50 * ONE_PERCENTAGE; // 50%
     uint256 constant HEALTH_FACTOR_LIQUIDATION_THRESHOLD = ONE;
 
-    uint256 constant BASE_LIQUIDITY_RATE = 10 * ONE_PERCENTAGE; // 10% 
+    // @audit-issue causes non-zero interest calculation even when no borrowers present
+    // Possible solution: set to 0 at deployment. Original commented below:
+    uint256 constant BASE_LIQUIDITY_RATE = 0 * ONE_PERCENTAGE; // 10% 
+    // uint256 constant BASE_LIQUIDITY_RATE = 10 * ONE_PERCENTAGE; // 10% 
+
     uint256 constant BASE_BORROW_RATE = 18 * ONE_PERCENTAGE; // 18%
     uint256 constant BASE_LIQUIDITY_INDEX = ONE; // 1
     uint256 constant BASE_BORROW_INDEX = ONE; // 1
@@ -121,17 +126,19 @@ library Types {
         if (debtToken.balanceOf(user) == 0) return true;
         if (vars.liquidityThreshold == 0) return true;
 
+        // @audit-info unitPrice is redundant 
         AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
         (, int256 result, , , ) = oracle.latestRoundData();
         uint256 unitPrice = uint256(result);
 
-        uint256 totalCollateralInUsd = unitPrice * sToken.balanceOf(user);
-        uint256 totalDebtInUsd = unitPrice * debtToken.balanceOf(user);
-        uint256 amountToDecreaseInUsd = unitPrice * amount;
+        uint256 totalCollateralInUsd = unitPrice * sToken.balanceOf(user) / Types.ONE;
+        uint256 totalDebtInUsd = unitPrice * debtToken.balanceOf(user) / Types.ONE;
+        uint256 amountToDecreaseInUsd = unitPrice * amount / Types.ONE;
         uint256 collateralBalanceAfterDecreaseInUsd = totalCollateralInUsd - amountToDecreaseInUsd;
 
         if (collateralBalanceAfterDecreaseInUsd == 0) return false;
 
+        // @audit-issue liquidityThreshold calculation is flawed dimensionally (26 decimals - 8 decimals)
         uint256 liquidityThresholdAfterDecrease = totalCollateralInUsd * vars.liquidityThreshold - 
             (amountToDecreaseInUsd * vars.liquidityThreshold) / collateralBalanceAfterDecreaseInUsd;
         uint256 healthFactorAfterDecrease = calculateHealthFactorFromBalance(
@@ -169,6 +176,7 @@ library Types {
         uint256 unitPrice = uint256(result);
         uint256 debtAssetPrice = 1;
 
+        // @audit debtToCover needn't be in USD and division by unitPrice will result in loss of information 
         uint256 maxAmountCollateralToLiquidate = debtAssetPrice * debtToCover * vars.liquidityBonus / unitPrice;
         if (maxAmountCollateralToLiquidate > userCollateralBalance) {
             collateralAmount = userCollateralBalance;
@@ -179,27 +187,27 @@ library Types {
         }
     }
 
-    /**
+   /**
    * @dev Calculates the interest rates depending on the reserve's state and configurations
    * @param reserve The address of the reserve
    * @param vars The interest rate data
    * @param liquidityAdded The liquidity added during the operation
    * @param liquidityTaken The liquidity taken during the operation
-   * @param totalDebt The total borrowed from the reserve
    * @param borrowRate The borrow rate
    * @return The liquidity rate, the stable borrow rate and the variable borrow rate
-**/
+    **/
     function calculateInterestRates(
         ReserveData memory reserve,
         InterestRateData memory vars,
         uint256 liquidityAdded,
         uint256 liquidityTaken,
-        uint256 totalDebt,
         uint256 borrowRate
     ) public view returns(uint256, uint256, uint256) {
-        IERC20 sToken = IERC20(reserve.sTokenAddress);
-        totalDebt /= ONE; // TODO find reason why divided
-        uint256 currentAvailableLiqudity = sToken.totalSupply() + liquidityAdded - liquidityTaken;
+        uint256 totalCollateral = IERC20(reserve.sTokenAddress).totalSupply();
+        uint256 totalDebt = IERC20(reserve.debtTokenAddress).totalSupply();
+
+        console.log(totalCollateral, liquidityAdded, liquidityTaken);
+        uint256 currentAvailableLiqudity = totalCollateral + liquidityAdded - liquidityTaken;
         uint256 currentLiquidityRate = reserve.liquidityRate;
         
         (uint256 utilizationRate, uint256 currentBorrowRate) = calculateUtilizationAndBorrowRate(
@@ -209,12 +217,8 @@ library Types {
             currentAvailableLiqudity
         );
         
-        if (totalDebt != 0) {
-            currentLiquidityRate = borrowRate  * utilizationRate / ONE;
-        }
-        else {
-            currentLiquidityRate = 0;
-        }
+        currentLiquidityRate = borrowRate  * utilizationRate / ONE;
+    
         return (currentLiquidityRate, currentBorrowRate, utilizationRate);
     }
 
@@ -234,6 +238,7 @@ library Types {
         } else {
             utilizationRate = totalDebt * ONE / (currentAvailableLiqudity + totalDebt);
         }
+        // @follow-up 
         if (utilizationRate > vars.optimalUtilizationRate) {
             uint256 excessUtilizationRateRatio = utilizationRate - vars.optimalUtilizationRate / vars.excessUtilizationRate;
             currentBorrowRate = reserve.borrowRate + vars.rateSlope1 + vars.rateSlope2 * excessUtilizationRateRatio;

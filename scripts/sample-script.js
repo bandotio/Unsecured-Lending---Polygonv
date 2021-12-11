@@ -5,6 +5,9 @@
 // Runtime Environment's members available in the global scope.
 const hre = require("hardhat");
 const LP_ABI = require("../artifacts/contracts/LendingPool/LendingPool.sol/LendingPool.json")
+
+const ZERO_ADX = "0x0000000000000000000000000000000000000000"
+
 async function main() {
   // Hardhat always runs the compile task when running scripts with its command
   // line interface.
@@ -35,7 +38,6 @@ async function main() {
     }
   });
   const lendingPool = await LendingPool.deploy(
-    sToken.address, dToken.address,
     "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0", // Make contract according to AggregatorV3Interface
     "80", "85", "110", "65", "10", "100"
   );
@@ -46,8 +48,9 @@ async function main() {
   // const lendingPool = hre.ethers.Contract(LENDING_POOL_ADDRESS, LP_ABI, hre.)
   console.log("LendingPool deployed to:", lendingPool.address);
 
-  let blockTimestamp = await lendingPool.getBlockTimestamp()
-  console.log(blockTimestamp.toString(), (await lendingPool.getNormalizedIncome(blockTimestamp)).toString())
+  let depositValue = hre.ethers.utils.parseEther("10")
+  await lendingPool.deposit(ZERO_ADX, { value: depositValue })
+  await lendingPool.withdraw(depositValue, ZERO_ADX)
 }
 
 // We recommend this pattern to be able to use async/await everywhere

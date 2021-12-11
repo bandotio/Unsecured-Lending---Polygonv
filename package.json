@@ -18,8 +18,10 @@
   },
   "homepage": "https://github.com/bandotio/Unsecured-Lending---Polygonv#readme",
   "dependencies": {
+    "@remix-project/remixd": "^0.5.5",
     "dotenv": "^10.0.0",
-    "hardhat": "^2.7.0"
+    "hardhat": "^2.7.0",
+    "remixd": "^0.2.4"
   },
   "devDependencies": {
     "@chainlink/contracts": "^0.2.2",
