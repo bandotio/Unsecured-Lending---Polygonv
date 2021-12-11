@@ -473,13 +473,14 @@ contract LendingPool {
         if (!receiveSToken) {
             uint256 availableMatic = address(this).balance; 
             require(
-                availableMatic > maxCollateralToLiquidate, 
+                availableMatic >= maxCollateralToLiquidate, 
                 "LPCM not enough liquidity to liquidate"
             );
         } 
+        
+        updatePoolState(actualDebtToLiquidate, 0);
         debtToken.burn(borrower, actualDebtToLiquidate);
 
-        updatePoolState(actualDebtToLiquidate, 0);
 
         if (receiveSToken) {
             require(sToken.transferFrom(borrower, liquidator, maxCollateralToLiquidate), "transferFrom failed");                   
@@ -506,8 +507,8 @@ contract LendingPool {
             actualDebtToLiquidate = debtToCover;
         }
 
-        // TODO Check if division by `Types.ONE` is harmful
-        (uint256 maxCollateralToLiquidate, uint256 debtAmountNeeded) = Types.calculateAvailableCollateralToLiquidate(reserve, actualDebtToLiquidate, sToken.balanceOf(borrower) / Types.ONE);
+        // @follow-up Check if division by `Types.ONE` is harmful
+        (uint256 maxCollateralToLiquidate, uint256 debtAmountNeeded) = Types.calculateAvailableCollateralToLiquidate(reserve, actualDebtToLiquidate, sToken.balanceOf(borrower));// / Types.ONE);
         if (debtAmountNeeded < actualDebtToLiquidate) {
             actualDebtToLiquidate = debtAmountNeeded;
         }

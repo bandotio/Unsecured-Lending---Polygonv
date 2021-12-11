@@ -171,16 +171,16 @@ library Types {
         uint256 collateralAmount, 
         uint256 debtAmountNeeded
     ) {
-        AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
-        (, int256 result, , , ) = oracle.latestRoundData();
-        uint256 unitPrice = uint256(result);
+        // AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
+        // (, int256 result, , , ) = oracle.latestRoundData();
+        // uint256 unitPrice = uint256(result);
         uint256 debtAssetPrice = 1;
 
         // @audit debtToCover needn't be in USD and division by unitPrice will result in loss of information 
-        uint256 maxAmountCollateralToLiquidate = debtAssetPrice * debtToCover * vars.liquidityBonus / unitPrice;
+        uint256 maxAmountCollateralToLiquidate = debtAssetPrice * debtToCover * vars.liquidityBonus; // / unitPrice;
         if (maxAmountCollateralToLiquidate > userCollateralBalance) {
             collateralAmount = userCollateralBalance;
-            debtAmountNeeded = unitPrice * userCollateralBalance / debtAssetPrice / vars.liquidityBonus;
+            debtAmountNeeded = userCollateralBalance / debtAssetPrice / vars.liquidityBonus;
         } else {
             collateralAmount = maxAmountCollateralToLiquidate;
             debtAmountNeeded = debtToCover;
