@@ -96,6 +96,7 @@ contract LendingPool {
         uint256 optimalUtilizationRate,
         uint256 rateSlope1, uint256 rateSlope2
     ) {
+        // Change as per convenience
         sToken = new ERC20Blacklistable(0, "S-Token", "STOK", 18);
         debtToken = new ERC20Blacklistable(0, "D-Token", "DTOK", 18);
 
@@ -113,8 +114,6 @@ contract LendingPool {
             rateSlope2
         );
 
-        // debtToken = IERC20(_debtToken);
-        // sToken = IERC20(_sToken);
         oracle = AggregatorV3Interface(oraclePriceAddress);
     }
 
@@ -149,12 +148,12 @@ contract LendingPool {
 
         usersData[receiver].lastUpdatedTimestamp = block.timestamp;
             
-        // @audit-issue Doesn't take reserve.liquidityIndex into account
-        // Possible solution: Original commented out:
-        sToken.mint(receiver, amount * Types.ONE / reserve.liquidityIndex);
-        // sToken.mint(receiver, amount);
+        sToken.mint(receiver, amount);
         users[receiver] = true;
         usersList.push(receiver);
+
+        // @audit check if any issue with this
+        delegateAllowance[receiver][receiver] += amount;
 
         emit Deposit(sender, receiver, amount);
     }
@@ -163,13 +162,14 @@ contract LendingPool {
         return block.timestamp;
     }
 
-    // Understand how normalized income, normalized debt and liquidityIndex
     function getNormalizedIncome(uint256 timestamp) public view returns(uint256) {
-        if (timestamp == block.timestamp)
-            return reserve.liquidityIndex;
+        // Unnecessary
+        // if (timestamp == block.timestamp)
+        //     return reserve.liquidityIndex;
         return calculateLinearInterest(timestamp) * reserve.liquidityIndex / Types.ONE;
     }
 
+    // @audit 
     function getNormalizedDebt(uint256 timestamp) public view returns(uint256) {    
         if (timestamp == block.timestamp)
             return 0;
@@ -178,8 +178,11 @@ contract LendingPool {
     }
 
     // Returns the factor to multiply with the principal amount to get current value
+    // @audit relation with liquidityIndex and effect on withdraw, repay, borrow
     function calculateLinearInterest(uint256 lastUpdatedTimestamp) public view returns(uint256) {
         uint256 timeDifference = block.timestamp - lastUpdatedTimestamp;
+        if (lastUpdatedTimestamp == 0)
+            timeDifference = 0;
         console.log("calculateLinearInterest:", block.timestamp, timeDifference, 10**Types.DECIMALS * timeDifference / Types.ONE_YEAR);
 
         // @audit-issue Returns extremely high value when lastUpdateTimestamp is 0 i.e. first run
@@ -200,15 +203,12 @@ contract LendingPool {
             timeDifferenceMinusTwo = 0;
         }
 
-        // TODO flawed in the rust contracts, all multiplications should be before division
-        // uint256 ratePerSecond = rate / Types.ONE_YEAR;
-        // uint256 basePowerTwo = ratePerSecond**2 ;
-        // uint256 basePowerThree = ratePerSecond**3;
         uint256 secondTerm = timeDifference * timeDifferenceMinusOne * rate**2  / (Types.ONE_YEAR**2 * Types.ONE * 2);
         uint256 thirdTerm = timeDifference * timeDifferenceMinusOne * timeDifferenceMinusTwo * rate**3 / (Types.ONE_YEAR**3 * Types.ONE**2 * 6);
         return rate * timeDifference / Types.ONE_YEAR + secondTerm + thirdTerm;
     }
 
+    /// @dev should always be called before token burns
     function updatePoolState(uint256 liquidityAdded, uint256 liquidityTaken) internal {
         (
             uint256 newLiquidityRate, 
@@ -217,8 +217,8 @@ contract LendingPool {
         ) = Types.calculateInterestRates(
             reserve, 
             interestSetting, 
-            liquidityAdded / Types.ONE, 
-            liquidityTaken / Types.ONE, 
+            liquidityAdded , 
+            liquidityTaken , 
             reserve.borrowRate
         );
 
@@ -296,22 +296,25 @@ contract LendingPool {
     * - E.g. User borrows 100 MATIC passing as `onBehalfOf` his own address, receiving the 100 MATIC in his wallet
     *   and 100 debt tokens
     * @param amount The amount to be borrowed
-    * @param onBehalfOf Address of the user who will receive the debt. Should be the address of the borrower itself
-    * calling the function if he wants to borrow against his own collateral, or the address of the credit delegator
+    * @param onBehalfOf Address of the user who will receive the debt. Should be the zero address
+    * if he wants to borrow against his own collateral, or the address of the credit delegator
     * if he has been given credit delegation allowance
     **/ 
     function borrow(uint256 amount, address onBehalfOf) public {
         require(amount != 0, "Invalid amount");
 
         address sender = msg.sender;
-        require(onBehalfOf != address(0), "Invalid value for address onBehalfOf");
+        if (onBehalfOf == address(0))
+            onBehalfOf = msg.sender;
         address receiver = onBehalfOf;
-
+        
+        // @audit-issue delegateAllowance doesn't have a key-pair (user-A, user-A)
         uint256 creditBalance = delegateAllowance[receiver][sender];
         require(
             amount <= creditBalance, 
             "Not enough available user balance"
         );       
+        // @audit uses unaudited methods
         uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE /Types.ONE ;
         uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE_PERCENTAGE / Types.ONE;
         Types.UserReserveData memory reserveData = usersData[receiver];
@@ -411,6 +414,7 @@ contract LendingPool {
         delegateesForDelegator[delegator].push(delegatee);
     }
 
+    // Unnecessary
     function delegateAmount(address delegator, address delegatee) public view returns(uint256) {
         return delegateAllowance[delegator][delegatee];
     }
@@ -427,7 +431,7 @@ contract LendingPool {
             amounts[i] = delegateAllowance[delegators[i]][msg.sender];
     }
 
-    function delegateTo() public view returns(
+    function delegateTo() public view returns (
        address[] memory delegatees, 
        uint[] memory amounts
     ) {
@@ -447,15 +451,13 @@ contract LendingPool {
     * @param receiveSToken `true` if the liquidators wants to receive the collateral sTokens, `false` if he wants
     * to receive the underlying collateral asset directly
     **/  
-    function liquidationCall(address borrower, uint256 debtToCover, bool receiveSToken) public {
-        // @audit-issue no checks to see if debtToCover is legitimate!
-        
+    function liquidationCall(address borrower, uint256 debtToCover, bool receiveSToken) public {        
         address payable liquidator = payable(msg.sender);
         
         // (, int256 result, , , ) = oracle.latestRoundData();
         // uint256 unitPrice = uint256(result);
 
-        // @audit-issue if amount delegated to somebody else, balance will be 0, but debt != 0 
+        // @audit-issue debt holder and collateral holder may be different addresses
         uint256 borrowerTotalDebt = debtToken.balanceOf(borrower); // * unitPrice / Types.ONE; 
         uint256 borrowerTotalBalance = sToken.balanceOf(borrower); // * unitPrice / Types.ONE;
         uint256 healthFactor = Types.calculateHealthFactorFromBalance(borrowerTotalBalance, borrowerTotalDebt, reserve.liquidityThreshold);
@@ -473,7 +475,7 @@ contract LendingPool {
         if (!receiveSToken) {
             uint256 availableMatic = address(this).balance; 
             require(
-                availableMatic >= maxCollateralToLiquidate, 
+                availableMatic >= maxCollateralToLiquidate, // Meaning maxCollateralToLiquidate is 1:1 value with MATIC, thus sToken:MATIC is 1:1 
                 "LPCM not enough liquidity to liquidate"
             );
         } 
@@ -486,20 +488,23 @@ contract LendingPool {
             require(sToken.transferFrom(borrower, liquidator, maxCollateralToLiquidate), "transferFrom failed");                   
         } else {
             updatePoolState(0, maxCollateralToLiquidate);
-
             sToken.burn(borrower, maxCollateralToLiquidate);
+
             (bool sent, ) = liquidator.call{value: maxCollateralToLiquidate}("");
             require(sent, "transfer failed");
         }
 
         Types.UserReserveData memory borrowerData = usersData[borrower];
         require(borrowerData.lastUpdatedTimestamp > 0, "user config does not exist");
+        
+        // @audit-issue store the last calculated borrowInterest
         borrowerData.lastUpdatedTimestamp = block.timestamp;
+
         emit Liquidation(liquidator, borrower, actualDebtToLiquidate, maxCollateralToLiquidate);
     }
 
     function calculateDebtAndCollateralToLiquidate(address borrower, uint256 debtToCover, uint256 maxLiquidatableDebt) internal view returns(
-        uint256 actualDebtToLiquidate, uint256
+        uint256 actualDebtToLiquidate, uint256 
     ) {
         if (debtToCover > maxLiquidatableDebt) {
             actualDebtToLiquidate = maxLiquidatableDebt;
@@ -507,8 +512,7 @@ contract LendingPool {
             actualDebtToLiquidate = debtToCover;
         }
 
-        // @follow-up Check if division by `Types.ONE` is harmful
-        (uint256 maxCollateralToLiquidate, uint256 debtAmountNeeded) = Types.calculateAvailableCollateralToLiquidate(reserve, actualDebtToLiquidate, sToken.balanceOf(borrower));// / Types.ONE);
+        (uint256 maxCollateralToLiquidate, uint256 debtAmountNeeded) = Types.calculateAvailableCollateralToLiquidate(reserve, actualDebtToLiquidate, sToken.balanceOf(borrower));
         if (debtAmountNeeded < actualDebtToLiquidate) {
             actualDebtToLiquidate = debtAmountNeeded;
         }
@@ -545,7 +549,7 @@ contract LendingPool {
         uint256 totalDToken = debtToken.totalSupply();
         uint256 availableLiquidity = totalSToken - totalDToken;
         
-        uint256 utilizationRate = totalDToken * 1000000000 / totalSToken  * 100 ;
+        uint256 utilizationRate = totalDToken * Types.ONE / (totalSToken + totalDToken);
         return (totalSToken, availableLiquidity, totalDToken, utilizationRate);
     }
 
@@ -556,7 +560,7 @@ contract LendingPool {
     function getReserveData() public view returns
     (
         uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256
-    ){
+    ) {
         return (
             reserve.liquidityRate, 
             reserve.borrowRate,
@@ -574,6 +578,8 @@ contract LendingPool {
     function getUserReserveDataUi(address user) public view returns(uint256, uint256, uint256, uint256, uint256) {
         uint256 userSToken = sToken.balanceOf(user) / Types.ONE;
         uint256 userDToken = debtToken.balanceOf(user) / Types.ONE;
+
+        // @audit dependent on unaudited getNormalized* methods
         uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * userSToken / Types.ONE;
         uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * userDToken / Types.ONE_PERCENTAGE;
         Types.UserReserveData memory data = usersData[user];
@@ -586,7 +592,6 @@ contract LendingPool {
         } else return (0, 0, 0, 0, 0);
     }
 
-    //should remove the user para to protect other user privacy
     function getUserBorrowStatus() public view returns(
         address[] memory addresses, 
         uint256[] memory amounts
@@ -640,7 +645,6 @@ contract LendingPool {
         usersKycData[msg.sender] = Types.UserKycData ({name: name, email: email});      
     }
     
-    // TODO optimizations may be possible 
     function getTheUnhealthyReserves() public view returns(uint256 length, address[] memory addresses) {
         (, int256 result, , , ) = oracle.latestRoundData();
         uint256 unitPrice = uint256(result);
@@ -649,7 +653,7 @@ contract LendingPool {
 
         for (uint256 i = 0; i < usersList.length; i++) {
             address user = usersList[i];
-            if (users[user])
+            if (!users[user])
                 continue;
         
             uint256 _totalCollateralInUsd = unitPrice * sToken.balanceOf(user) / Types.ONE;
