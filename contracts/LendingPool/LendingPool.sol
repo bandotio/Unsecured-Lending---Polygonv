@@ -61,7 +61,7 @@ contract LendingPool {
     mapping(address => Types.UserReserveData) public usersData;
 
     mapping(address => mapping(address => uint256)) public delegateAllowance;
-    // Following two vars are only for iterating on `delegateAllowance`
+    // Following two vars are only for iterating on `delegateAllowance`, merge into usersData
     mapping(address=>address[]) delegatorsForDelegatee;
     mapping(address=>address[]) delegateesForDelegator;
 
@@ -152,9 +152,6 @@ contract LendingPool {
         users[receiver] = true;
         usersList.push(receiver);
 
-        // @audit check if any issue with this
-        delegateAllowance[receiver][receiver] += amount;
-
         emit Deposit(sender, receiver, amount);
     }
 
@@ -163,32 +160,23 @@ contract LendingPool {
     }
 
     function getNormalizedIncome(uint256 timestamp) public view returns(uint256) {
-        // Unnecessary
-        // if (timestamp == block.timestamp)
-        //     return reserve.liquidityIndex;
         return calculateLinearInterest(timestamp) * reserve.liquidityIndex / Types.ONE;
     }
 
-    // @audit 
-    function getNormalizedDebt(uint256 timestamp) public view returns(uint256) {    
-        if (timestamp == block.timestamp)
-            return 0;
-        uint256 stableBorrowRate = reserve.borrowRate;
-        return calculateCompoundedInterest(stableBorrowRate, timestamp) * reserve.borrowIndex / Types.ONE;
+    function getNormalizedDebt(uint256 timestamp) public view returns(uint256) {
+        return calculateCompoundedInterest(reserve.borrowRate, timestamp) * reserve.borrowIndex / Types.ONE;
     }
 
     // Returns the factor to multiply with the principal amount to get current value
     // @audit relation with liquidityIndex and effect on withdraw, repay, borrow
     function calculateLinearInterest(uint256 lastUpdatedTimestamp) public view returns(uint256) {
         uint256 timeDifference = block.timestamp - lastUpdatedTimestamp;
+
+        // Check redundancy for this
         if (lastUpdatedTimestamp == 0)
             timeDifference = 0;
-        console.log("calculateLinearInterest:", block.timestamp, timeDifference, 10**Types.DECIMALS * timeDifference / Types.ONE_YEAR);
-
-        // @audit-issue Returns extremely high value when lastUpdateTimestamp is 0 i.e. first run
-        // used in `updatePoolState` and `getNormalizedIncome`
-        // return value always used in conjunction with reserve.liquidityIndex
-        return reserve.liquidityRate * timeDifference / Types.ONE_YEAR + Types.ONE;
+        
+        return reserve.liquidityRate * timeDifference / Types.ONE_YEAR;
     }
 
     function calculateCompoundedInterest(uint256 rate, uint256 lastUpdatedTimestamp) public view returns(uint256) {
@@ -227,11 +215,13 @@ contract LendingPool {
         reserve.borrowRate = newBorrowRate;
         interestSetting.utilizationRate = utilizationRate;
 
+        // @follow-up see how lastUpdatedTimestamp initialization prior to this can cause issues
         if (reserve.liquidityRate > 0) {
             uint256 cumulatedLiquidityInterest = calculateLinearInterest(reserve.lastUpdatedTimestamp);
             reserve.liquidityIndex = reserve.liquidityIndex * cumulatedLiquidityInterest / Types.ONE;
         }
 
+        // @audit-issue setting reserve.lastUpdatedTimestamp before calculating borrowInterest is harmful
         uint256 cumulatedBorrowInterest = calculateCompoundedInterest(reserve.borrowRate, reserve.lastUpdatedTimestamp);
         if (cumulatedBorrowInterest > 0) {
             reserve.borrowIndex = reserve.borrowIndex * cumulatedBorrowInterest / Types.ONE;
@@ -259,8 +249,8 @@ contract LendingPool {
             receiver = payable(to);
         }
         
-        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(sender) / Types.ONE / Types.ONE ;
-        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(sender) / Types.ONE_PERCENTAGE / Types.ONE;
+        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(sender) / Types.ONE ;
+        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(sender) / Types.ONE;
         Types.UserReserveData memory reserveData = usersData[sender];
         require(reserveData.lastUpdatedTimestamp > 0, "user config does not exist");
 
@@ -268,15 +258,17 @@ contract LendingPool {
             reserveData.cumulatedLiquidityInterest += interest;
             reserveData.cumulatedBorrowInterest += debtInterest;
         }
-        uint256 availableUserBalance = reserveData.cumulatedLiquidityInterest - reserveData.cumulatedBorrowInterest;
+
+        uint256 availableUserBalance = sToken.balanceOf(sender) + reserveData.cumulatedLiquidityInterest - reserveData.cumulatedBorrowInterest;
 
         require(
-            amount / Types.ONE <= availableUserBalance,
+            amount <= availableUserBalance,
             "Not enough available user balance"
         );
 
         updatePoolState(0, amount);
 
+        // @follow-up
         if (reserve.liquidityIndex / Types.ONE == 0) {
             sToken.burn(sender, amount);
         } else {
@@ -301,23 +293,25 @@ contract LendingPool {
     * if he has been given credit delegation allowance
     **/ 
     function borrow(uint256 amount, address onBehalfOf) public {
-        require(amount != 0, "Invalid amount");
-
+        require(onBehalfOf != address(0), "Invalid value for address onBehalfOf");
         address sender = msg.sender;
-        if (onBehalfOf == address(0))
-            onBehalfOf = msg.sender;
+
+        require(amount != 0, "Invalid amount");
         address receiver = onBehalfOf;
         
-        // @audit-issue delegateAllowance doesn't have a key-pair (user-A, user-A)
-        uint256 creditBalance = delegateAllowance[receiver][sender];
+        uint256 creditBalance = sToken.balanceOf(sender) - debtToken.balanceOf(sender);
+        if (sender != receiver)
+            creditBalance = delegateAllowance[receiver][sender]; // This should be reversed
+
         require(
             amount <= creditBalance, 
             "Not enough available user balance"
         );       
-        // @audit uses unaudited methods
-        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE /Types.ONE ;
-        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE_PERCENTAGE / Types.ONE;
+        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE ;
+        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE;
+
         Types.UserReserveData memory reserveData = usersData[receiver];
+        // TODO check if it is updated on deposit/borrow/withdraw/repay
         require(reserveData.lastUpdatedTimestamp > 0, "user config does not exist");
         if (interest > 0) {
             reserveData.cumulatedLiquidityInterest = interest;
@@ -454,22 +448,22 @@ contract LendingPool {
     function liquidationCall(address borrower, uint256 debtToCover, bool receiveSToken) public {        
         address payable liquidator = payable(msg.sender);
         
-        // (, int256 result, , , ) = oracle.latestRoundData();
-        // uint256 unitPrice = uint256(result);
+        (, int256 result, , , ) = oracle.latestRoundData();
+        uint256 unitPrice = uint256(result);
 
-        // @audit-issue debt holder and collateral holder may be different addresses
-        uint256 borrowerTotalDebt = debtToken.balanceOf(borrower); // * unitPrice / Types.ONE; 
-        uint256 borrowerTotalBalance = sToken.balanceOf(borrower); // * unitPrice / Types.ONE;
+        // @audit-issue total debt interest accrued and deposit interest accrued not added
+        uint256 borrowerTotalDebt = debtToken.balanceOf(borrower) * unitPrice / Types.ONE; 
+        uint256 borrowerTotalBalance = sToken.balanceOf(borrower) * unitPrice / Types.ONE;
         uint256 healthFactor = Types.calculateHealthFactorFromBalance(borrowerTotalBalance, borrowerTotalDebt, reserve.liquidityThreshold);
         require(
-            healthFactor <= Types.HEALTH_FACTOR_LIQUIDATION_THRESHOLD, 
+            healthFactor < Types.HEALTH_FACTOR_LIQUIDATION_THRESHOLD, 
             "LPCM Health factor not below threshold"
         );
         require(
             borrowerTotalDebt > 0, 
             "LPCM specified currency not borrowed by user"
         );
-        uint256 maxLiquidatableDebt = borrowerTotalDebt * Types.LIQUIDATION_CLOSE_FACTOR_PERCENT / Types.ONE;
+        uint256 maxLiquidatableDebt = borrowerTotalDebt * Types.LIQUIDATION_CLOSE_FACTOR_PERCENT / unitPrice / Types.ONE;
         (uint256 actualDebtToLiquidate, uint256 maxCollateralToLiquidate) = calculateDebtAndCollateralToLiquidate(borrower, debtToCover, maxLiquidatableDebt);
  
         if (!receiveSToken) {
@@ -497,7 +491,8 @@ contract LendingPool {
         Types.UserReserveData memory borrowerData = usersData[borrower];
         require(borrowerData.lastUpdatedTimestamp > 0, "user config does not exist");
         
-        // @audit-issue store the last calculated borrowInterest
+        // @audit-issue store the last calculated borrowInterest, if previous suggestion implemented and tokens minted, set to 0
+        // alternatively make an update function for addresses
         borrowerData.lastUpdatedTimestamp = block.timestamp;
 
         emit Liquidation(liquidator, borrower, actualDebtToLiquidate, maxCollateralToLiquidate);
@@ -529,6 +524,7 @@ contract LendingPool {
             return 0;
         }
 
+        // @audit-issue total debt interest accrued and deposit interest accrued not added 
         uint256 _totalCollateralInUsd = unitPrice * sToken.balanceOf(user) / Types.ONE;
         uint256 _totalDebtInUsd = unitPrice * debtToken.balanceOf(user) / Types.ONE;
         uint256 healthFactor = Types.calculateHealthFactorFromBalance(_totalCollateralInUsd, _totalDebtInUsd, reserve.liquidityThreshold);
@@ -579,7 +575,6 @@ contract LendingPool {
         uint256 userSToken = sToken.balanceOf(user) / Types.ONE;
         uint256 userDToken = debtToken.balanceOf(user) / Types.ONE;
 
-        // @audit dependent on unaudited getNormalized* methods
         uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * userSToken / Types.ONE;
         uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * userDToken / Types.ONE_PERCENTAGE;
         Types.UserReserveData memory data = usersData[user];

@@ -126,7 +126,7 @@ library Types {
         if (debtToken.balanceOf(user) == 0) return true;
         if (vars.liquidityThreshold == 0) return true;
 
-        // @audit-info unitPrice is redundant 
+        // @audit-info unitPrice is redundant  as of now
         AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
         (, int256 result, , , ) = oracle.latestRoundData();
         uint256 unitPrice = uint256(result);
@@ -138,9 +138,11 @@ library Types {
 
         if (collateralBalanceAfterDecreaseInUsd == 0) return false;
 
-        // @audit-issue liquidityThreshold calculation is flawed dimensionally (26 decimals - 8 decimals)
-        uint256 liquidityThresholdAfterDecrease = totalCollateralInUsd * vars.liquidityThreshold - 
-            (amountToDecreaseInUsd * vars.liquidityThreshold) / collateralBalanceAfterDecreaseInUsd;
+        // @audit-info -up different from AAVE's implementation but works for values tested
+        uint256 liquidityThresholdAfterDecrease = totalCollateralInUsd * vars.liquidityThreshold / collateralBalanceAfterDecreaseInUsd;
+        // ORIGINAL
+        // uint256 liquidityThresholdAfterDecrease = (totalCollateralInUsd * vars.liquidityThreshold - 
+        //     (amountToDecreaseInUsd * vars.liquidityThreshold)) / collateralBalanceAfterDecreaseInUsd;
         uint256 healthFactorAfterDecrease = calculateHealthFactorFromBalance(
             collateralBalanceAfterDecreaseInUsd,
             totalDebtInUsd,
@@ -174,10 +176,10 @@ library Types {
         // AggregatorV3Interface oracle = AggregatorV3Interface(vars.oraclePriceAddress);
         // (, int256 result, , , ) = oracle.latestRoundData();
         // uint256 unitPrice = uint256(result);
-        // @follow-up no accompanied decimal data
+        // @audit-info no accompanied decimal data
         uint256 debtAssetPrice = 1;
 
-        // @audit debtToCover needn't be in USD and division by unitPrice will result in loss of information 
+        // @note in the rust contracts, debtToCover is in USD while userCollateralBalance is in tokens
         uint256 maxAmountCollateralToLiquidate = debtAssetPrice * debtToCover * vars.liquidityBonus; // / unitPrice;
         if (maxAmountCollateralToLiquidate > userCollateralBalance) {
             collateralAmount = userCollateralBalance;
