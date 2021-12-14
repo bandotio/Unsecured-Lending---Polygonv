@@ -1,7 +1,6 @@
 //SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "../ERC20/ERC20Blacklistable.sol";
 // import "../ERC20/IERC20.sol";
@@ -10,7 +9,6 @@ import {Types} from "./Types.sol";
 import "hardhat/console.sol";
 
 contract LendingPool {
-    using SafeMath for uint;
     using Types for *;
     
     /**
@@ -196,7 +194,7 @@ contract LendingPool {
         return rate * timeDifference / Types.ONE_YEAR + secondTerm + thirdTerm;
     }
 
-    /// @dev should always be called before token burns
+    /// @dev should always be called before token burns or mints
     function updatePoolState(uint256 liquidityAdded, uint256 liquidityTaken) internal {
         (
             uint256 newLiquidityRate, 
@@ -232,6 +230,7 @@ contract LendingPool {
         return Types.calculateInterestRates(reserve, interestSetting, liquidityAdded, liquidityTaken, reserve.borrowRate);
     }
 
+    // FIXME @audit-issue 
     /**
     * @dev Withdraws an `amount` of underlying asset from the reserve, burning the equivalent sTokens owned
     * E.g. User has 100 sMATIC, calls withdraw() and receives 100 MATIC, burning the 100 sMATIC
@@ -249,17 +248,27 @@ contract LendingPool {
             receiver = payable(to);
         }
         
-        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(sender) / Types.ONE ;
-        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(sender) / Types.ONE;
+        // mint debtTokens and sTokens according to currently accrued interest
+        // check with balanceDecreaseAllowed
+        // Check when reserve.lastUpdatedTimestamp is update
+        updateUserState(sender); // Comment below to available user balance
+        // uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(sender) / Types.ONE ;
+        // uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(sender) / Types.ONE;
         Types.UserReserveData memory reserveData = usersData[sender];
         require(reserveData.lastUpdatedTimestamp > 0, "user config does not exist");
 
-        if (interest > 0) {
-            reserveData.cumulatedLiquidityInterest += interest;
-            reserveData.cumulatedBorrowInterest += debtInterest;
-        }
+        // if (interest > 0) {
+        //     reserveData.cumulatedLiquidityInterest += interest;
+        //     reserveData.cumulatedBorrowInterest += debtInterest;
+        // }
 
-        uint256 availableUserBalance = sToken.balanceOf(sender) + reserveData.cumulatedLiquidityInterest - reserveData.cumulatedBorrowInterest;
+        // Calculating amount of liquidity required to exist for the debt to not be liquidated
+        uint256 minimumCollateral = debtToken.balanceOf(sender) * Types.ONE / reserve.liquidityThreshold ;
+        // uint256 availableUserBalance = sToken.balanceOf(sender) + 
+        //     reserveData.cumulatedLiquidityInterest - 
+        //     debtToken.balanceOf(sender) - 
+        //     reserveData.cumulatedBorrowInterest;
+        uint256 availableUserBalance = sToken.balanceOf(sender) - minimumCollateral;
 
         require(
             amount <= availableUserBalance,
@@ -268,12 +277,12 @@ contract LendingPool {
 
         updatePoolState(0, amount);
 
-        // @follow-up
-        if (reserve.liquidityIndex / Types.ONE == 0) {
+        // @follow-up 
+        // if (reserve.liquidityIndex / Types.ONE == 0) {
             sToken.burn(sender, amount);
-        } else {
-            sToken.burn(sender, amount * Types.ONE / reserve.liquidityIndex);
-        }
+        // } else {
+        //     sToken.burn(sender, amount * Types.ONE / reserve.liquidityIndex);
+        // }
         reserveData.lastUpdatedTimestamp = block.timestamp;
 
         (bool sent, ) = receiver.call{value: amount}("");
@@ -299,39 +308,46 @@ contract LendingPool {
         require(amount != 0, "Invalid amount");
         address receiver = onBehalfOf;
         
-        uint256 creditBalance = sToken.balanceOf(sender) - debtToken.balanceOf(sender);
-        if (sender != receiver)
-            creditBalance = delegateAllowance[receiver][sender]; // This should be reversed
+        uint256 creditBalance = sToken.balanceOf(sender) - debtToken.balanceOf(sender) * Types.ONE / reserve.liquidityThreshold;
+        if (sender != receiver) {
+            creditBalance = delegateAllowance[sender][receiver] > creditBalance ? 
+                creditBalance : delegateAllowance[sender][receiver];
+        }
+        uint256 maxBorrowAmount = creditBalance * reserve.liquidityThreshold / Types.ONE;
 
         require(
-            amount <= creditBalance, 
+            amount <= maxBorrowAmount, 
             "Not enough available user balance"
         );       
-        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE ;
-        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE;
+        // uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE ;
+        // uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE;
 
         Types.UserReserveData memory reserveData = usersData[receiver];
         // TODO check if it is updated on deposit/borrow/withdraw/repay
         require(reserveData.lastUpdatedTimestamp > 0, "user config does not exist");
-        if (interest > 0) {
-            reserveData.cumulatedLiquidityInterest = interest;
-            reserveData.cumulatedBorrowInterest = debtInterest;
-        }
-        uint256 curAvailableBalance = reserveData.cumulatedLiquidityInterest - reserveData.cumulatedBorrowInterest;
+        // if (interest > 0) {
+        //     reserveData.cumulatedLiquidityInterest = interest;
+        //     reserveData.cumulatedBorrowInterest = debtInterest;
+        // }
+        // uint256 curAvailableBalance = reserveData.cumulatedLiquidityInterest - reserveData.cumulatedBorrowInterest;
 
-        require(
-            amount / Types.ONE <= curAvailableBalance, 
-            "Not enough available user balance"
-        );
+        // require(
+        //     amount / Types.ONE <= curAvailableBalance, 
+        //     "Not enough available user balance"
+        // );
         reserveData.lastUpdatedTimestamp = block.timestamp;
 
-        delegateAllowance[receiver][sender] = creditBalance - amount;
-        if (reserve.borrowIndex / Types.ONE == 0) 
-            debtToken.mint(receiver, amount);
-        else debtToken.mint(receiver, amount * reserve.borrowIndex / Types.ONE);
+
+        if (sender != receiver)
+            delegateAllowance[sender][receiver] = creditBalance - amount;
+        
+        // if (reserve.borrowIndex / Types.ONE == 0) 
+        debtToken.mint(receiver, amount);
+        // else debtToken.mint(receiver, amount * reserve.borrowIndex / Types.ONE);
 
         if (!borrowStatus[sender][receiver].receiverInList) { 
             borrowOwners[sender].push(receiver);
+            borrowStatus[sender][receiver].receiverInList = true;
         }
         borrowStatus[sender][receiver].amount += amount;   
 
@@ -356,28 +372,41 @@ contract LendingPool {
         require(onBehalfOf != address(0), "Invalid value for address onBehalfOf");
         address receiver = onBehalfOf;
         uint256 amount = msg.value;
+        uint256 amountToRefund = amount > borrowStatus[sender][receiver].amount  ?
+            amount - borrowStatus[sender][receiver].amount : 0;
         require(amount != 0, "Invalid amount");
 
-        uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE / Types.ONE ;
-        uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE_PERCENTAGE / Types.ONE;
         Types.UserReserveData memory reserveDataSender = usersData[receiver];
-        require(reserveDataSender.lastUpdatedTimestamp > 0, "you have not borrowed any matic");
-
-        if (interest > 0) {
-            reserveDataSender.cumulatedLiquidityInterest = interest;
-            reserveDataSender.cumulatedBorrowInterest = debtInterest;
-        }
-        if (reserve.borrowIndex / Types.ONE == 0) {
-            debtToken.burn(receiver, amount);            
-        } else {
-            debtToken.burn(receiver, amount * reserve.borrowIndex / Types.ONE);
-        }
-
-        borrowStatus[sender][receiver].amount -= amount; 
-        reserveDataSender.lastUpdatedTimestamp = block.timestamp;
+        require(reserveDataSender.lastUpdatedTimestamp > 0, "onBehalfOf address has not borrowed any matic");
         
+        updateUserState(receiver);
+        // uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE / Types.ONE ;
+        // uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE_PERCENTAGE / Types.ONE;
+
+        // if (interest > 0) {
+        //     reserveDataSender.cumulatedLiquidityInterest = interest;
+        //     reserveDataSender.cumulatedBorrowInterest = debtInterest;
+        // }
+
         updatePoolState(amount, 0);
 
+        // if (reserve.borrowIndex / Types.ONE == 0) {
+        debtToken.burn(receiver, amount);            
+        // } else {
+        //     debtToken.burn(receiver, amount * reserve.borrowIndex / Types.ONE);
+        // }
+
+        // @audit-issue sender need not be a person who has taken a loan
+        borrowStatus[receiver][sender].amount -= amount; 
+        if (borrowStatus[receiver][sender].amount == 0)
+            borrowStatus[receiver][sender].receiverInList = false;
+
+        reserveDataSender.lastUpdatedTimestamp = block.timestamp;
+        
+        if (amountToRefund > 0) {
+            (bool sent, ) = sender.call{value: amount}("");
+            require(sent, "transfer failed");
+        }
         emit Repay(onBehalfOf, sender, amount);
     }
 
@@ -406,6 +435,18 @@ contract LendingPool {
         // For iterating purposes
         delegatorsForDelegatee[delegatee].push(delegator);
         delegateesForDelegator[delegator].push(delegatee);
+    }
+
+    /// @dev mints sToken and debtToken to user as per interest accrued at that moment
+    function updateUserState(address user) public {
+        sToken.mint(
+            user,
+            getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(user) / Types.ONE
+        );
+        debtToken.mint(
+            user,
+            getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(user) / Types.ONE
+        );
     }
 
     // Unnecessary
