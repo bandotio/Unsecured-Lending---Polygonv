@@ -21,7 +21,7 @@
     "@remix-project/remixd": "^0.5.5",
     "dotenv": "^10.0.0",
     "hardhat": "^2.7.0",
-    "remixd": "^0.2.4"
+    "hardhat-shorthand": "^1.0.0"
   },
   "devDependencies": {
     "@chainlink/contracts": "^0.2.2",
