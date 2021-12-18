@@ -21,13 +21,13 @@ task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
  * @type import('hardhat/config').HardhatUserConfig
  */
 module.exports = {
-  networks: {
-    // hardhat: {
-    //   forking: {
-    //     url: process.env.POLYGON_MAINNET_ENDPOINT,
-    //   }
-    // }
-  },
+  // networks: {
+  //   hardhat: {
+  //     forking: {
+  //       url: process.env.POLYGON_MAINNET_ENDPOINT,
+  //     }
+  //   }
+  // },
   solidity: {
     version: "0.8.4",
     settings: {

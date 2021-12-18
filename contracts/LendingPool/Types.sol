@@ -209,7 +209,7 @@ library Types {
         uint256 totalCollateral = IERC20(reserve.sTokenAddress).totalSupply();
         uint256 totalDebt = IERC20(reserve.debtTokenAddress).totalSupply();
 
-        console.log(totalCollateral, liquidityAdded, liquidityTaken);
+        // console.log(totalCollateral, liquidityAdded, liquidityTaken);
         uint256 currentAvailableLiqudity = totalCollateral + liquidityAdded - liquidityTaken;
         uint256 currentLiquidityRate = reserve.liquidityRate;
         
@@ -221,7 +221,7 @@ library Types {
         );
         
         currentLiquidityRate = borrowRate  * utilizationRate / ONE;
-    
+        console.log("Current Liquidity Rate:", currentLiquidityRate);
         return (currentLiquidityRate, currentBorrowRate, utilizationRate);
     }
 
