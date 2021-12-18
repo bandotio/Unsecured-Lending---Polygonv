@@ -141,7 +141,7 @@ contract LendingPool {
         require(amount != 0, "Invalid amount sent");
 
         updatePoolState(amount, 0);
-
+        updateUserState(sender);
         usersData[receiver].lastUpdatedTimestamp = block.timestamp;
             
         sToken.mint(receiver, amount);
@@ -156,6 +156,7 @@ contract LendingPool {
     }
 
     function getNormalizedIncome(uint256 timestamp) public view returns(uint256) {
+        console.log(calculateLinearInterest(timestamp));
         return calculateLinearInterest(timestamp) * reserve.liquidityIndex / Types.ONE;
     }
 
@@ -168,10 +169,10 @@ contract LendingPool {
     function calculateLinearInterest(uint256 lastUpdatedTimestamp) public view returns(uint256) {
         uint256 timeDifference = block.timestamp - lastUpdatedTimestamp;
 
+        console.log("timeDifferrence:", timeDifference);
         // Check redundancy for this
         if (lastUpdatedTimestamp == 0)
             timeDifference = 0;
-        
         return reserve.liquidityRate * timeDifference / Types.ONE_YEAR;
     }
 
@@ -248,6 +249,7 @@ contract LendingPool {
         // check with balanceDecreaseAllowed
         // Check when reserve.lastUpdatedTimestamp is update
         updateUserState(sender);
+        console.log("Available balance to withdraw:", sToken.balanceOf(sender));
         require(Types.balanceDecreaseAllowed(reserve, sender, amount), "balance decrease by given amount not allowed");
         // uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(sender) / Types.ONE ;
         // uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(sender) / Types.ONE;
@@ -278,7 +280,7 @@ contract LendingPool {
         //     sToken.burn(sender, amount * Types.ONE / reserve.liquidityIndex);
         // }
         reserveData.lastUpdatedTimestamp = block.timestamp;
-
+        console.log("Withdrawn Amount:", amount);
         (bool sent, ) = receiver.call{value: amount}("");
         require(sent, "Failed to send MATIC");
         emit Withdraw(sender, receiver, amount);
@@ -385,7 +387,7 @@ contract LendingPool {
         uint256 amountToRefund = sentAmount - amount;
         console.log("Contract balance now:", address(this).balance);
         console.log("Amount to refund:", amountToRefund);
-        
+
         if (amountToRefund > 0) {
             (bool sent, ) = sender.call{value: amountToRefund}("");
             require(sent, "transfer failed");
@@ -455,6 +457,7 @@ contract LendingPool {
             user,
             getNormalizedIncome(usersData[user].lastUpdatedTimestamp) * sToken.balanceOf(user) / Types.ONE
         );
+        console.log("NormalizedIncome:", getNormalizedIncome(usersData[user].lastUpdatedTimestamp));
         debtToken.mint(
             user,
             getNormalizedDebt(usersData[user].lastUpdatedTimestamp) * debtToken.balanceOf(user) / Types.ONE
