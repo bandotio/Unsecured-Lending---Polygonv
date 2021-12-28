@@ -609,7 +609,10 @@ contract LendingPool {
         uint256 totalDToken = debtToken.totalSupply();
         uint256 availableLiquidity = totalSToken - totalDToken;
         
-        uint256 utilizationRate = totalDToken * Types.ONE / (totalSToken + totalDToken);
+        uint256 utilizationRate;
+        if (totalSToken + totalDToken != 0)
+            utilizationRate = totalDToken * Types.ONE / (totalSToken + totalDToken);
+        else utilizationRate = 0;
         return (totalSToken, availableLiquidity, totalDToken, utilizationRate);
     }
 

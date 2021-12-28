@@ -40,6 +40,11 @@ async function main() {
   console.log("User balance After Borrow:", (await provider.getBalance(accounts[0].address)).toString())
   console.log("Contract balance After Borrow:", (await provider.getBalance(lendingPool.address)).toString(), "\n")
 
+  // Process to display ui data
+  let uidata = await lendingPool.getReserveDataUi()
+  uidata = uidata.map((x) => String(x))
+  console.log("UI Data:", uidata)
+
   await lendingPool.repay(accounts[0].address, { value: hre.ethers.utils.parseEther("9") })
   console.log("Repayed 9")
   console.log("User balance After Repay:", (await provider.getBalance(accounts[0].address)).toString())
@@ -49,6 +54,8 @@ async function main() {
 
   console.log("User balance:", (await provider.getBalance(accounts[0].address)).toString())
   console.log("Contract balance:", (await provider.getBalance(lendingPool.address)).toString())
+
+
 }
 
 main()
