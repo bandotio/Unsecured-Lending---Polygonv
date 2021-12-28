@@ -7,6 +7,7 @@ import "./BlackList.sol";
 contract ERC20Blacklistable is ERC20PresetMinterPauser, BlackList {
 
     uint8 _decimals;
+    
     constructor(
         uint256 initialSupply, 
         string memory _name, 
@@ -45,5 +46,14 @@ contract ERC20Blacklistable is ERC20PresetMinterPauser, BlackList {
 
     function burn(address account, uint256 amount) public virtual onlyOwner {
         _burn(account, amount);
+    }
+
+    function transferFrom(address sender, address recipient, uint amount) public override returns(bool) {
+        if (msg.sender == owner())
+            _transfer(sender, recipient, amount);
+        else
+            ERC20.transferFrom(sender, recipient, amount);
+
+        return true;
     }
 }

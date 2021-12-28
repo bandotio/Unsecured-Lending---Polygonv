@@ -156,7 +156,7 @@ contract LendingPool {
     }
 
     function getNormalizedIncome(uint256 timestamp) public view returns(uint256) {
-        console.log(calculateLinearInterest(timestamp));
+        // console.log(calculateLinearInterest(timestamp));
         return calculateLinearInterest(timestamp) * reserve.liquidityIndex / Types.ONE;
     }
 
@@ -169,7 +169,7 @@ contract LendingPool {
     function calculateLinearInterest(uint256 lastUpdatedTimestamp) public view returns(uint256) {
         uint256 timeDifference = block.timestamp - lastUpdatedTimestamp;
 
-        console.log("timeDifferrence:", timeDifference);
+        // console.log("timeDifferrence:", timeDifference);
         // Check redundancy for this
         if (lastUpdatedTimestamp == 0)
             timeDifference = 0;
@@ -293,22 +293,21 @@ contract LendingPool {
     * - E.g. User borrows 100 MATIC passing as `onBehalfOf` his own address, receiving the 100 MATIC in his wallet
     *   and 100 debt tokens
     * @param amount The amount to be borrowed
-    * @param onBehalfOf Address of the user who will receive the debt. Should be the zero address
-    * if he wants to borrow against his own collateral, or the address of the credit delegator
-    * if he has been given credit delegation allowance
+    * @param onBehalfOf Address of the user who will receive the debt. The delegator's address
+    * user has been given credit delegation allowance
     **/ 
     function borrow(uint256 amount, address onBehalfOf) public {
         require(onBehalfOf != address(0), "Invalid value for address onBehalfOf");
-        address sender = msg.sender;
+        updateUserState(onBehalfOf);
 
         require(amount != 0, "Invalid amount");
-        address receiver = onBehalfOf;
+        address receiver = msg.sender;
         
         // Part of balance that is not used as collateral
-        uint256 creditBalance = sToken.balanceOf(sender) - debtToken.balanceOf(sender) * Types.ONE / reserve.liquidityThreshold;
-        if (sender != receiver) {
-            creditBalance = delegateAllowance[sender][receiver] > creditBalance ? 
-                creditBalance : delegateAllowance[sender][receiver];
+        uint256 creditBalance = sToken.balanceOf(onBehalfOf) - debtToken.balanceOf(onBehalfOf) * Types.ONE / reserve.liquidityThreshold;
+        if (receiver != onBehalfOf) {
+            creditBalance = delegateAllowance[onBehalfOf][receiver] > creditBalance ? 
+                creditBalance : delegateAllowance[onBehalfOf][receiver];
         }
         // Calculate max amount that can be used as collateral that is amount * liq. threshold percent
         uint256 maxBorrowAmount = creditBalance * reserve.liquidityThreshold / Types.ONE;
@@ -320,8 +319,8 @@ contract LendingPool {
         // uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE ;
         // uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE;
 
-        Types.UserReserveData memory reserveData = usersData[receiver];
-        require(reserveData.lastUpdatedTimestamp > 0, "user config does not exist");
+        // Types.UserReserveData memory reserveData = usersData[receiver];
+        // require(reserveData.lastUpdatedTimestamp > 0, "user config does not exist");
         // if (interest > 0) {
         //     reserveData.cumulatedLiquidityInterest = interest;
         //     reserveData.cumulatedBorrowInterest = debtInterest;
@@ -332,28 +331,28 @@ contract LendingPool {
         //     amount / Types.ONE <= curAvailableBalance, 
         //     "Not enough available user balance"
         // );
-        reserveData.lastUpdatedTimestamp = block.timestamp;
+        // reserveData.lastUpdatedTimestamp = block.timestamp;
 
 
-        if (sender != receiver)
-            delegateAllowance[sender][receiver] = creditBalance - amount;
+        if (receiver != onBehalfOf)
+            delegateAllowance[onBehalfOf][receiver] -= amount;
         
         // if (reserve.borrowIndex / Types.ONE == 0) 
-        debtToken.mint(receiver, amount);
+        debtToken.mint(onBehalfOf, amount);
         // else debtToken.mint(receiver, amount * reserve.borrowIndex / Types.ONE);
         updatePoolState(0, 0);
 
-        if (!borrowStatus[sender][receiver].receiverInList) { 
-            borrowOwners[sender].push(receiver);
-            borrowStatus[sender][receiver].receiverInList = true;
+        if (!borrowStatus[onBehalfOf][receiver].receiverInList) { 
+            borrowOwners[onBehalfOf].push(receiver);
+            borrowStatus[onBehalfOf][receiver].receiverInList = true;
         }
-        borrowStatus[sender][receiver].amount += amount;   
+        borrowStatus[onBehalfOf][receiver].amount += amount;   
 
-        (bool sent, ) = sender.call{value: amount}("");
+        (bool sent, ) = receiver.call{value: amount}("");
         require(sent, "transfer failed");
 
 
-        emit Borrow(sender, onBehalfOf, amount);
+        emit Borrow(receiver, onBehalfOf, amount);
     }
 
     /**
@@ -367,21 +366,22 @@ contract LendingPool {
     function repay(address onBehalfOf) public payable {
         address sender = msg.sender;
         require(onBehalfOf != address(0), "Invalid value for address onBehalfOf");
-        address receiver = onBehalfOf;
         uint256 sentAmount = msg.value;
 
-        updateUserState(receiver);
+        updateUserState(onBehalfOf);
 
         uint256 debtAvailable;
-        if (receiver != sender) {
-            require(borrowStatus[receiver][sender].amount > 0, "sender has not borrowed from onBehalfOf");
-            debtAvailable = borrowStatus[receiver][sender].amount;
+        console.log("Total debt for delegator:", debtToken.balanceOf(onBehalfOf));
+        if (onBehalfOf != sender) {
+            debtAvailable = borrowStatus[onBehalfOf][sender].amount;
+            require(debtAvailable > 0, "sender has not borrowed from onBehalfOf");
         }
         else {
-            require(debtToken.balanceOf(receiver) != 0, "User has not borrowed");
-            debtAvailable = debtToken.balanceOf(receiver);
+            debtAvailable = debtToken.balanceOf(onBehalfOf);
+            require(debtAvailable != 0, "User has not borrowed");
         }
-        console.log("Repay Log (SentAmount | DebtAvailable):", sentAmount, debtAvailable);
+        console.log("Debt to repay:", debtAvailable);
+
         uint256 amount = sentAmount > debtAvailable  ?
             debtAvailable : sentAmount;
         uint256 amountToRefund = sentAmount - amount;
@@ -396,8 +396,8 @@ contract LendingPool {
 
         require(amount != 0, "Invalid amount");
 
-        Types.UserReserveData memory reserveDataSender = usersData[receiver];
-        require(reserveDataSender.lastUpdatedTimestamp > 0, "onBehalfOf address has not borrowed any matic");
+        // Types.UserReserveData memory reserveDataSender = usersData[onBehalfOf];
+        // require(reserveDataSender.lastUpdatedTimestamp > 0, "onBehalfOf address has not borrowed any matic");
         
         // uint256 interest = getNormalizedIncome(reserve.lastUpdatedTimestamp) * sToken.balanceOf(receiver) / Types.ONE / Types.ONE ;
         // uint256 debtInterest = getNormalizedDebt(reserve.lastUpdatedTimestamp) * debtToken.balanceOf(receiver) / Types.ONE_PERCENTAGE / Types.ONE;
@@ -410,16 +410,16 @@ contract LendingPool {
         updatePoolState(amount, 0);
 
         // if (reserve.borrowIndex / Types.ONE == 0) {
-        debtToken.burn(receiver, amount);            
+        debtToken.burn(onBehalfOf, amount);            
         // } else {
         //     debtToken.burn(receiver, amount * reserve.borrowIndex / Types.ONE);
         // }
-        updateUserState(receiver);
+        updateUserState(onBehalfOf);
 
-        if (receiver != sender)
-            borrowStatus[receiver][sender].amount -= amount; 
+        if (onBehalfOf != sender)
+            borrowStatus[onBehalfOf][sender].amount -= amount; 
 
-        reserveDataSender.lastUpdatedTimestamp = block.timestamp;
+        // reserveDataSender.lastUpdatedTimestamp = block.timestamp;
         
         emit Repay(onBehalfOf, sender, amount);
     }
@@ -449,6 +449,8 @@ contract LendingPool {
         // For iterating purposes
         delegatorsForDelegatee[delegatee].push(delegator);
         delegateesForDelegator[delegator].push(delegatee);
+
+        emit Delegate(delegator, delegatee, amount);
     }
 
     /// @dev mints sToken and debtToken to user as per interest accrued at that moment
@@ -457,12 +459,12 @@ contract LendingPool {
             user,
             getNormalizedIncome(usersData[user].lastUpdatedTimestamp) * sToken.balanceOf(user) / Types.ONE
         );
-        console.log("NormalizedIncome:", getNormalizedIncome(usersData[user].lastUpdatedTimestamp));
+        // console.log("NormalizedIncome:", getNormalizedIncome(usersData[user].lastUpdatedTimestamp));
         debtToken.mint(
             user,
             getNormalizedDebt(usersData[user].lastUpdatedTimestamp) * debtToken.balanceOf(user) / Types.ONE
         );
-        console.log("Current Debt After Update:", debtToken.balanceOf(user));
+        // console.log("Current Debt After Update:", debtToken.balanceOf(user));
         usersData[user].lastUpdatedTimestamp = block.timestamp;
     }
 
@@ -523,9 +525,10 @@ contract LendingPool {
         );
         uint256 maxLiquidatableDebt = borrowerTotalDebt * Types.LIQUIDATION_CLOSE_FACTOR_PERCENT / unitPrice / Types.ONE;
         (uint256 actualDebtToLiquidate, uint256 maxCollateralToLiquidate) = calculateDebtAndCollateralToLiquidate(borrower, debtToCover, maxLiquidatableDebt);
- 
+
         if (!receiveSToken) {
             uint256 availableMatic = address(this).balance; 
+            console.log("Available Matic:", availableMatic, "MaxCollateralToLiquidate:", maxCollateralToLiquidate);
             require(
                 availableMatic >= maxCollateralToLiquidate, // Meaning maxCollateralToLiquidate is 1:1 value with MATIC, thus sToken:MATIC is 1:1 
                 "LPCM not enough liquidity to liquidate"
@@ -537,7 +540,9 @@ contract LendingPool {
 
 
         if (receiveSToken) {
+            console.log("Liquidator stoken balance before liquidation:", sToken.balanceOf(liquidator));
             require(sToken.transferFrom(borrower, liquidator, maxCollateralToLiquidate), "transferFrom failed");                   
+            console.log("Liquidator stoken balance before liquidation:", sToken.balanceOf(liquidator));
         } else {
             updatePoolState(0, maxCollateralToLiquidate);
             sToken.burn(borrower, maxCollateralToLiquidate);
