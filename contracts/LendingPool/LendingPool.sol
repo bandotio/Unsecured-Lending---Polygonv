@@ -5,7 +5,7 @@ import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "../ERC20/ERC20Blacklistable.sol";
 // import "../ERC20/IERC20.sol";
 import {Types} from "./Types.sol";
-
+import "../LiquidityIncentivize.sol";
 import "hardhat/console.sol";
 
 contract LendingPool {
@@ -84,14 +84,17 @@ contract LendingPool {
     ERC20Blacklistable public debtToken;
     AggregatorV3Interface oracle;
     
+    LiquidityIncentivize public liqIncentive;
+
     constructor(
         address oraclePriceAddress,
         uint256 ltv,
         uint256 liquidityThreshold,
         uint256 liquidityBonus,
         uint256 optimalUtilizationRate,
-        uint256 rateSlope1, uint256 rateSlope2
-    ) {
+        uint256 rateSlope1, uint256 rateSlope2,
+        uint256 _maxWeeklyReward
+    ) payable {
         // Change as per convenience
         sToken = new ERC20Blacklistable(0, "S-Token", "STOK", 18);
         debtToken = new ERC20Blacklistable(0, "D-Token", "DTOK", 18);
@@ -111,6 +114,7 @@ contract LendingPool {
         );
 
         oracle = AggregatorV3Interface(oraclePriceAddress);
+        liqIncentive = new LiquidityIncentivize{value: msg.value}(_maxWeeklyReward);
     }
 
     //when the contract init, the reserve.lastUpdatedTimestamp is 0, so needed
@@ -141,6 +145,7 @@ contract LendingPool {
         require(amount != 0, "Invalid amount sent");
 
         updatePoolState(amount, 0);
+        liqIncentive.updateUserData(msg.sender, amount, true);
         updateUserState(sender);
         usersData[receiver].lastUpdatedTimestamp = block.timestamp;
             
@@ -273,6 +278,7 @@ contract LendingPool {
         // );
 
         updatePoolState(0, amount);
+        liqIncentive.updateUserData(msg.sender, amount, false);
 
         // if (reserve.liquidityIndex / Types.ONE == 0) {
         sToken.burn(sender, amount);

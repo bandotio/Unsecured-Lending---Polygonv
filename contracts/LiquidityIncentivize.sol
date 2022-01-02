@@ -1,89 +1,95 @@
+// The incentive contract
+// How to use:
+// Deploy the pool contract with the incentive as msg.value and pass maxWeeklyRewards value
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-interface IERC20 {
-    function balanceOf(address _owner) external view returns (uint256 balance);
-    function transfer(address _to, uint256 _value) external returns (bool success);
-    function transferFrom(address _from, address _to, uint256 _value) external returns (bool success);
-    function approve(address _spender, uint256 _value) external returns (bool success);
-    function allowance(address _owner, address _spender) external view returns (uint256 remaining);
-    event Transfer(address indexed _from, address indexed _to, uint256 _value);
-    event Approval(address indexed _owner, address indexed _spender, uint256 _value);
-}
-
 contract LiquidityIncentivize is Ownable {
     struct UserData {
         uint rewards; // total rewards accumulated
         uint deposit; // total participating deposit in this incentivization  
-        uint depositTimestamp; // lat deposit/withdraw timestamp
+        uint updateTimestamp; // last deposit/withdraw timestamp
     }
+
+    address[] users;
 
     mapping(address => UserData) public userData;
     uint participatingSTokens;
 
     uint public rewardsLeft;
-    uint public weeklyReward;
+    uint public weeklyRewardLeft;
+    uint public maxWeeklyReward;
 
-    uint lastWeekTimestamp;
+    uint lastGlobalUpdateTimestamp;
     bool hasEnded; // true when all rewards have dried up
 
-    constructor(uint _weeklyReward) payable {
+    constructor(uint _maxWeeklyReward) payable {
         rewardsLeft = msg.value;
-        weeklyReward = _weeklyReward;
-        lastWeekTimestamp = block.timestamp;
+        maxWeeklyReward = _maxWeeklyReward;
+        weeklyRewardLeft = rewardsLeft >= maxWeeklyReward ? maxWeeklyReward : rewardsLeft;
+        lastGlobalUpdateTimestamp = block.timestamp;
     }
 
-    function updateUserData(address user, uint amount, bool liquidityAdded) public onlyOwner {
+    // Check `hasEnded` before calling to prevent unwanted reverts 
+    function updateUserData(address user, uint amount, bool liquidityAdded) external onlyOwner {
         require(!hasEnded, "This incentive dosn't have any more rewards");
-        updateWeek();
 
-        if (!liquidityAdded && (userData[user].deposit == 0))
-            return;
-        
-        uint rewards = (block.timestamp - lastWeekTimestamp) * weeklyReward * userData[user].deposit  / participatingSTokens;
-        if (rewards > address(this).balance) {
-            rewards = address(this).balance;
-            hasEnded = true;
+        require(block.timestamp < lastGlobalUpdateTimestamp + 7 days, "Call `updateRewardsGlobally` first!");
+
+        // If new user for this contract, add to `users` list
+        if (userData[user].updateTimestamp == 0) {
+            users.push(user);
+            userData[user].updateTimestamp = block.timestamp;
         }
-        rewardsLeft -= rewards;
 
-        userData[user].rewards += rewards;
-        userData[user].depositTimestamp = block.timestamp;
+        // Add pending rewards to the user's data
+        updateUserRewards(user);
+
+        if (!liquidityAdded && (userData[user].deposit < amount)) {
+            participatingSTokens -= userData[user].deposit; 
+            userData[user].deposit = 0;
+            return;
+        }
 
         if (!liquidityAdded) {
-            if (amount > userData[user].deposit) {
-                participatingSTokens -= userData[user].deposit;
-                userData[user].deposit = 0;
-            }
-            else {
-                participatingSTokens -= amount;
-                userData[user].deposit -= amount;
-            }
+            participatingSTokens -= amount;
+            userData[user].deposit -= amount;
         } else {
-            userData[user].deposit += amount;
             participatingSTokens += amount;
+            userData[user].deposit += amount;
         }
     }
 
-    function updateWeek() internal {
-        uint weeksPassed = (block.timestamp - lastWeekTimestamp) / (7 days);
-        lastWeekTimestamp += weeksPassed * 7 days;
-    }
+    function updateRewardsGlobally() public {
+        require(block.timestamp >= lastGlobalUpdateTimestamp + 7 days, "You can call this only after 7 days of previous week");
+        
+        for (uint i = 0; i < users.length; i++) {
+            updateUserRewards(users[i]);
+        }
+
+        lastGlobalUpdateTimestamp = block.timestamp;
+        weeklyRewardLeft = rewardsLeft >= maxWeeklyReward ? maxWeeklyReward : rewardsLeft;
+    } 
 
     // User calls this to accumulate rewards, as long as there are rewards available
-    function updateUserRewards() public {
-        require(!hasEnded, "This incentive dosn't have any more rewards");
-
-        uint rewards = (block.timestamp - lastWeekTimestamp) * weeklyReward * userData[msg.sender].deposit  / participatingSTokens;
-        if (rewards > address(this).balance) {
-            rewards = address(this).balance;
+    function updateUserRewards(address user) public {
+        uint rewards = (block.timestamp - userData[user].updateTimestamp) * maxWeeklyReward * userData[user].deposit  / participatingSTokens;
+        if (rewards > weeklyRewardLeft) {
+            rewards = weeklyRewardLeft;
             hasEnded = true;
         }
-        rewardsLeft -= rewards;
 
-        userData[msg.sender].rewards += rewards;
+        rewardsLeft -= rewards;
+        weeklyRewardLeft -= rewards;
+        userData[user].rewards += rewards;
+        userData[user].updateTimestamp = block.timestamp;
+    }
+
+    function isActive() external view returns(bool) {
+        return  (block.timestamp < lastGlobalUpdateTimestamp + 7 days) && !hasEnded;
     }
 
     function withdraw() public {
@@ -97,6 +103,8 @@ contract LiquidityIncentivize is Ownable {
     // Used for filling up the rewards
     receive() external payable {
         rewardsLeft += msg.value;
+        weeklyRewardLeft = rewardsLeft >= maxWeeklyReward ? maxWeeklyReward : rewardsLeft;
+        
         if (msg.value != 0)
             hasEnded = false;
     }
