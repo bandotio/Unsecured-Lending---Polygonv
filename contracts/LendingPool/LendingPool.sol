@@ -145,7 +145,8 @@ contract LendingPool {
         require(amount != 0, "Invalid amount sent");
 
         updatePoolState(amount, 0);
-        liqIncentive.updateUserData(msg.sender, amount, true);
+        if (liqIncentive.isActive())
+            liqIncentive.updateUserData(msg.sender, amount, true);
         updateUserState(sender);
         usersData[receiver].lastUpdatedTimestamp = block.timestamp;
             
@@ -278,7 +279,8 @@ contract LendingPool {
         // );
 
         updatePoolState(0, amount);
-        liqIncentive.updateUserData(msg.sender, amount, false);
+        if (liqIncentive.isActive())
+            liqIncentive.updateUserData(msg.sender, amount, false);
 
         // if (reserve.liquidityIndex / Types.ONE == 0) {
         sToken.burn(sender, amount);
